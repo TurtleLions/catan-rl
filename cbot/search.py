@@ -1,5 +1,9 @@
 """Expectimax search over Catanatron with a learned P(win) leaf evaluator.
 
+With more than two players the search is max-n: every node carries a vector of
+win probabilities (one per seat) and the player to move picks the child that is
+best for itself. In 1v1 this is ordinary minimax.
+
 Differences from Catanatron's AlphaBetaPlayer:
   * leaves are scored by an MLP trained on game outcomes (cbot.train), not the
     hand-weighted base_fn;
@@ -14,6 +18,7 @@ import numpy as np
 
 from catanatron.models.player import Player
 from catanatron.models.enums import ActionPrompt, ActionType
+from cbot import fast  # noqa: F401  (patch Catanatron before taking references)
 from catanatron.players.value import ValueFunctionPlayer, base_fn
 from catanatron.players.tree_search_utils import list_prunned_actions
 
@@ -27,6 +32,7 @@ class ValueNet:
         self.derived = bool(d["derived"]) if "derived" in d else False
         self.mean = d["mean"]
         self.std = d["std"]
+        self.players = int(d["players"]) if "players" in d else 2
         self.layers = []
         i = 0
         while f"W{i}" in d:
@@ -39,6 +45,8 @@ class ValueNet:
         self.layers[0] = (W0n.astype(np.float32), b0n.astype(np.float32))
 
     def __call__(self, X):
+        """1v1 nets: P(P0 wins), shape (n,). Multiplayer nets: softmax over
+        seats relative to P0, shape (n, players)."""
         h = X if self.cols is None else X[:, self.cols]
         if self.derived:
             h = np.concatenate([h, feats.derive(X)], axis=1)
@@ -46,6 +54,9 @@ class ValueNet:
             h = h @ W + b
             if i < len(self.layers) - 1:
                 np.maximum(h, 0, out=h)
+        if h.shape[1] > 1:
+            h = np.exp(h - h.max(1, keepdims=True))
+            return h / h.sum(1, keepdims=True)
         return 1.0 / (1.0 + np.exp(-np.clip(h[:, 0], -30, 30)))
 
 
@@ -75,7 +86,7 @@ class NNSearchPlayer(Player):
 
     def __init__(
         self, color, model_path, depth=2, prune=1, maxleaves=4000,
-        place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0,
+        place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0,
     ):
         super().__init__(color)
         self.net = get_net(model_path)
@@ -98,6 +109,9 @@ class NNSearchPlayer(Player):
         # for both seats, then score the first mid-game position with the net.
         self.initmode = int(initf)
         self.initf = ValueFunctionPlayer(color) if self.initmode else None
+        # Opening completion only for the `openk` best candidates by base_fn
+        # (0 = all candidates).
+        self.openk = int(openk)
 
     def _actions(self, game, root):
         if self.prune and not root:
@@ -123,12 +137,16 @@ class NNSearchPlayer(Player):
             vals = self._eval(leaves)
         else:
             vals = np.zeros(0)
+        me = self._me(game)
         scored = [
             (sum(p * self._value(n, vals) for n, p in outcomes), a)
             for a, outcomes in tree[1]
         ]
-        scored.sort(key=lambda x: -x[0])
-        self.last_value = scored[0][0]
+        scored.sort(key=lambda x: -x[0][me])
+        # last_vec: win probability per seat (game.state.colors order).
+        self.last_vec = scored[0][0]
+        self.last_value = float(self.last_vec[me])
+        scored = [(v[me], a) for v, a in scored]
         if (
             self.place
             and game.state.current_prompt == ActionPrompt.BUILD_INITIAL_SETTLEMENT
@@ -137,6 +155,8 @@ class NNSearchPlayer(Player):
         return scored[0][1]
 
     def _complete_opening(self, game, actions):
+        if self.openk and len(actions) > self.openk:
+            actions = [a for _, a in self._base_shortlist(game, self.openk)]
         finals = []
         for a in actions:
             g = game.copy()
@@ -147,10 +167,10 @@ class NNSearchPlayer(Player):
                     _ROLLOUT_POLICY[c] = ValueFunctionPlayer(c)
                 g.execute(_ROLLOUT_POLICY[c].decide(g, g.playable_actions), validate_action=False)
             finals.append(g)
-        vals = self._eval(finals)
+        vals = self._eval(finals)[:, self._me(game)]
         return actions[int(np.argmax(vals))]
 
-    def _base_shortlist(self, game):
+    def _base_shortlist(self, game, k=None):
         fn = base_fn()
         scored = []
         for a in game.playable_actions:
@@ -159,7 +179,7 @@ class NNSearchPlayer(Player):
             scored.append((fn(g, self.color), a))
         scored.sort(key=lambda x: -x[0])
         # mix=0 => pure rollout score; the base_fn scale is not a probability.
-        return [(0.0, a) for _, a in scored[: self.topk]]
+        return [(0.0, a) for _, a in scored[: k or self.topk]]
 
     def _place_by_rollouts(self, game, cands):
         best_a, best_s = None, -1.0
@@ -172,19 +192,33 @@ class NNSearchPlayer(Player):
                 best_a, best_s = a, s
         return best_a
 
+    def _me(self, game):
+        return game.state.colors.index(self.color)
+
     def _eval(self, games):
+        """Win probability per seat, shape (len(games), players), in
+        game.state.colors order."""
         X = np.stack([feats.encode(g, self.color) for g in games])
         vals = self.net(X)
-        if self.sym:
-            opp = [c for c in games[0].state.colors if c != self.color][0]
-            Xo = np.stack([feats.encode(g, opp) for g in games])
-            vals = 0.5 * (vals + 1.0 - self.net(Xo))
-        return vals
+        n = len(games[0].state.colors)
+        me = self._me(games[0])
+        if vals.ndim == 1:
+            if self.sym:
+                opp = [c for c in games[0].state.colors if c != self.color][0]
+                Xo = np.stack([feats.encode(g, opp) for g in games])
+                vals = 0.5 * (vals + 1.0 - self.net(Xo))
+            rel = np.stack([vals, 1.0 - vals], axis=1)
+        else:
+            rel = vals
+        # Relative seat j is absolute seat (me + j) % n.
+        return np.roll(rel, me, axis=1)
 
     def _build(self, game, depth, leaves, root=False):
         w = game.winning_color()
         if w is not None:
-            return ("T", 1.0 if w == self.color else 0.0)
+            v = np.zeros(len(game.state.colors))
+            v[game.state.colors.index(w)] = 1.0
+            return ("T", v)
         if depth == 0 or (not root and len(leaves) >= self.maxleaves):
             acts = game.playable_actions
             if (
@@ -198,29 +232,30 @@ class NNSearchPlayer(Player):
                 for g, p in outs:
                     leaves.append(g)
                     kids.append((("L", len(leaves) - 1), p))
-                return ("MAX", [(acts[0], kids)])
+                return (game.state.current_player_index, [(acts[0], kids)])
             leaves.append(game)
             return ("L", len(leaves) - 1)
         actions = self._actions(game, root)
-        maximize = game.state.current_color() == self.color
         children = []
         for a in actions:
             outs = chance.execute_spectrum(game, a)
             children.append(
                 (a, [(self._build(g, depth - 1, leaves), p) for g, p in outs])
             )
-        return ("MAX" if maximize else "MIN", children)
+        # Decision node, labeled with the mover's seat.
+        return (game.state.current_player_index, children)
 
     def _value(self, node, vals):
+        """Win-probability vector (one entry per seat) of a tree node."""
         kind = node[0]
         if kind == "L":
-            return float(vals[node[1]])
+            return vals[node[1]]
         if kind == "T":
             return node[1]
         best = None
         for _, outcomes in node[1]:
             v = sum(p * self._value(n, vals) for n, p in outcomes)
-            if best is None or (v > best if kind == "MAX" else v < best):
+            if best is None or v[kind] > best[kind]:
                 best = v
         return best
 

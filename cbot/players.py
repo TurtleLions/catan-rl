@@ -15,7 +15,7 @@ from catanatron.players.weighted_random import WeightedRandomPlayer
 from catanatron.models.player import RandomPlayer
 import catanatron.players.minimax as minimax
 
-from cbot import chance
+from cbot import chance, fast  # noqa: F401  (fast: engine speedups)
 
 
 class FixedAlphaBetaPlayer(AlphaBetaPlayer):

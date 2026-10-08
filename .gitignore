@@ -3,9 +3,13 @@ vendor/
 data/
 __pycache__/
 *.pyc
-# Keep only the final ensemble's numpy weights (models/V2*_s*.npz + FINAL.txt).
+# Keep only released numpy weights: the 1v1 final ensemble (V2*, FINAL.txt) and 4-player round 0 (M0*).
 models/*
 !models/V2a_s*.npz
 !models/V2b_s*.npz
 !models/V2c_s*.npz
 !models/*.txt
+!models/M0_s*.npz
+!models/M0e_s*.npz
+.venv-pypy/
+tools/

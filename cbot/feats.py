@@ -9,6 +9,7 @@ import functools
 
 import numpy as np
 
+from cbot import fast  # noqa: F401  (patch Catanatron before taking references)
 from catanatron import features as F
 from catanatron.models.enums import ActionPrompt, RESOURCES
 from catanatron.models.map import number_probability
@@ -29,14 +30,32 @@ def _node_pips(catan_map):
     return pips
 
 
+# Multiplayer encoders skip the raw board one-hots (tiles, ports, nodes,
+# edges): in 1v1 they only taught the net to memorize games.
+_COMPACT_EXTRACTORS = (F.player_features, F.resource_hand_features, F.game_features)
+
+
 def _sample(game, p0):
-    s = F.create_sample(game, p0)
+    st = game.state
+    n = len(st.colors)
+    if n == 2:
+        s = F.create_sample(game, p0)
+    else:
+        s = {}
+        for ex in _COMPACT_EXTRACTORS:
+            s.update(ex(game, p0))
     s.update(_production(game, p0))
     s.update(F.reachability_features(game, p0, 2))
     st = game.state
     s["X_MY_TURN"] = st.current_color() == p0
     s["X_I_AM_FIRST"] = st.colors[0] == p0
     s["X_NUM_TURNS"] = st.num_turns / 100.0
+    if n > 2:
+        # Seat in turn order and who is to move, relative to P0.
+        me = st.colors.index(p0)
+        for i in range(n):
+            s[f"X_SEAT{i}"] = me == i
+            s[f"X_P{i}_TO_MOVE"] = st.current_player_index == (me + i) % n
     s["X_INITIAL_PHASE"] = st.is_initial_build_phase
     for p in _PROMPTS:
         s[f"X_PROMPT_{p.name}"] = st.current_prompt == p
@@ -46,11 +65,12 @@ def _sample(game, p0):
 
 
 @functools.lru_cache(maxsize=4)
-def feature_names():
+def feature_names(n=2):
     from catanatron import Color, Game
     from catanatron.models.player import RandomPlayer
 
-    g = Game([RandomPlayer(Color.RED), RandomPlayer(Color.BLUE)], seed=0)
+    colors = [Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE][:n]
+    g = Game([RandomPlayer(c) for c in colors], seed=0)
     return tuple(sorted(_sample(g, Color.RED).keys()))
 
 
@@ -68,16 +88,22 @@ def _opp_hand(game, p0):
 
 
 def encode(game, p0):
-    """Layout: [sorted feature_names() | 54 node pips | 5 opponent hand]. The
+    """1v1 layout: [sorted feature_names() | 54 node pips | 5 opponent hand]. The
     opponent-hand block is appended last so models trained on the older,
-    shorter vectors (which store explicit column indices) still work."""
+    shorter vectors (which store explicit column indices) still work.
+    Multiplayer layout: just sorted feature_names(n) (compact features only)."""
+    n = len(game.state.colors)
     s = _sample(game, p0)
-    names = feature_names()
+    names = feature_names(n)
     base = np.fromiter((float(s[k]) for k in names), dtype=np.float32, count=len(names))
+    if n > 2:
+        return base
     return np.concatenate([base, _node_pips(game.state.board.map), _opp_hand(game, p0)])
 
 
-def dim():
+def dim(n=2):
+    if n > 2:
+        return len(feature_names(n))
     return len(feature_names()) + NUM_NODES + NUM_OPP
 
 

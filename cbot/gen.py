@@ -1,9 +1,13 @@
-"""Generate (state features, outcome) training data from 1v1 games.
+"""Generate (state features, outcome) training data from self-play games.
 
     python -m cbot.gen --out data/r0 --games 60000 --mix "AB,F:3 AB,AB:2 F,F:1 ABfix,AB:2"
+    python -m cbot.gen --out data/m0 --games 40000 --mix "AB,F,F,F:2 F,F,F,F:1"
 
-Each recorded state is stored from both players' perspectives with label
-1 if that player went on to win. Optional epsilon-random moves add diversity.
+Each recorded state is stored from every player's perspective. 1v1 shards hold
+y = 1 if that player went on to win and v = the mover's search value mapped to
+that player. Multiplayer shards hold y = the winner's seat relative to that
+player (0 = itself) and V = the search's per-seat win probabilities, also
+relative. Optional epsilon-random moves add diversity.
 """
 
 import os
@@ -25,45 +29,53 @@ def parse_mix(mix):
     out = []
     for item in mix.split():
         pair, w = item.rsplit(":", 1) if item.count(":") and item.rsplit(":", 1)[1].isdigit() else (item, "1")
-        a, b = pair.split(",")
-        out.append((a, b, int(w)))
+        out.append((tuple(pair.split(",")), int(w)))
     return out
 
 
+COLORS = [Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE]
+
+
 def play_record(args):
-    spec_a, spec_b, seed, eps, p_record = args
+    specs, seed, eps, p_record = args
     from cbot import feats
     from cbot.players import make_player
 
     rng = random.Random(seed * 7 + 1)
-    a = make_player(spec_a, Color.RED)
-    b = make_player(spec_b, Color.BLUE)
-    game = Game([a, b], seed=seed)
+    game = Game([make_player(sp, c) for sp, c in zip(specs, COLORS)], seed=seed)
+    colors = game.state.colors  # seat order
+    n = len(colors)
     rows, who, sv = [], [], []
 
     def decide(player, g, actions):
         rec = rng.random() < p_record
         if rec:
-            for c in (Color.RED, Color.BLUE):
+            for c in colors:
                 rows.append(feats.encode(g, c))
-                who.append(c)
-                sv.append(np.nan)
+                who.append(colors.index(c))
+                sv.append(np.full(n, np.nan))
         if len(actions) > 1 and rng.random() < eps:
             return rng.choice(actions)
         act = player.decide(g, actions)
-        v = getattr(player, "last_value", None)
-        if rec and v is not None:
-            # Search value from the mover's view; 1v1 so the other seat gets 1-v.
-            for k in (-2, -1):
-                sv[k] = v if who[k] == player.color else 1.0 - v
+        vec = getattr(player, "last_vec", None)
+        if rec and vec is not None:
+            # Per-seat search values, rotated so each row is relative to its player.
+            for k in range(-n, 0):
+                sv[k] = np.roll(vec, -who[k])
         return act
 
     winner = game.play(decide_fn=decide)
     if winner is None or not rows:
         return None
     X = np.stack(rows).astype(np.float16)
-    y = np.array([c == winner for c in who], dtype=np.int8)
-    return X, y, np.array(sv, dtype=np.float32), np.full(len(y), seed, dtype=np.int64)
+    w = colors.index(winner)
+    who = np.array(who)
+    V = np.array(sv, dtype=np.float32)
+    if n == 2:
+        y, V = (who == w).astype(np.int8), V[:, 0]
+    else:
+        y = ((w - who) % n).astype(np.int8)
+    return X, y, V, np.full(len(y), seed, dtype=np.int64)
 
 
 def main():
@@ -80,15 +92,14 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     mix = parse_mix(args.mix)
-    weights = [w for _, _, w in mix]
+    weights = [w for _, w in mix]
     epss = [float(e) for e in args.eps.split(",")]
     rng = random.Random(args.seed0)
     jobs = []
     for i in range(args.games):
-        a, b, _ = rng.choices(mix, weights)[0]
-        if rng.random() < 0.5:
-            a, b = b, a
-        jobs.append((a, b, args.seed0 + i, rng.choice(epss), args.p_record))
+        specs = list(rng.choices(mix, weights)[0][0])
+        rng.shuffle(specs)
+        jobs.append((specs, args.seed0 + i, rng.choice(epss), args.p_record))
 
     Xs, ys, vs, gs, shard, done = [], [], [], [], 0, 0
     t0 = time.time()

@@ -1,11 +1,13 @@
-"""Parallel 1v1 arena with Wilson confidence intervals.
+"""Parallel arena with Wilson confidence intervals.
 
 Usage:
-    python -m cbot.arena A B --games 1000 --procs 30
+    python -m cbot.arena A B --games 1000 --procs 30          # 1v1
+    python -m cbot.arena A B C D --games 1000 --procs 30      # 4-player table
 
 Player specs are resolved by cbot.players.make_player (e.g. AB, F, ABfix, NN:path).
-Each seed is played twice with the seat order swapped, so neither bot gets the
-first-move advantage more often.
+A is the player under test; win rates are A's. Each seed is played once per
+rotation of the seating (twice in 1v1, four times with four players), so A sits
+in every seat on the same map.
 """
 
 import os
@@ -31,17 +33,18 @@ def wilson(k, n, z=1.96):
     return (c - h, c + h)
 
 
+COLORS = [Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE]
+
+
 def play_one(args):
-    spec_a, spec_b, seed, a_first = args
+    specs, seed, rot = args
     from cbot.players import make_player
 
-    a = make_player(spec_a, Color.RED)
-    b = make_player(spec_b, Color.BLUE)
-    # Seating is rng.sample(players) with the game seed, so swapping the input
-    # order under the same seed swaps the seats on an identical map.
-    game = Game([a, b] if a_first else [b, a], seed=seed)
-    a_first = game.state.colors[0] == Color.RED
-    times = {Color.RED: [0.0, 0], Color.BLUE: [0.0, 0]}
+    players = [make_player(sp, c) for sp, c in zip(specs, COLORS)]
+    # Seating is rng.sample(players) with the game seed, so rotating the input
+    # order under the same seed rotates the seats on an identical map.
+    game = Game(players[rot:] + players[:rot], seed=seed)
+    times = {p.color: [0.0, 0] for p in players}
 
     def decide(player, g, actions):
         t = time.perf_counter()
@@ -52,21 +55,22 @@ def play_one(args):
         return act
 
     winner = game.play(decide_fn=decide)
+    other = [c for c in COLORS[1 : len(specs)]]
     return {
         "a_won": winner == Color.RED,
-        "b_won": winner == Color.BLUE,
-        "a_first": a_first,
+        "b_won": winner in other,
+        "a_first": game.state.colors[0] == Color.RED,
+        "a_seat": game.state.colors.index(Color.RED),
         "turns": game.state.num_turns,
         "a_time": times[Color.RED],
-        "b_time": times[Color.BLUE],
+        "b_time": [sum(times[c][0] for c in other), sum(times[c][1] for c in other)],
     }
 
 
-def run(spec_a, spec_b, games, procs, seed0=0, quiet=False):
-    jobs = []
-    for i in range(games // 2):
-        jobs.append((spec_a, spec_b, seed0 + i, True))
-        jobs.append((spec_a, spec_b, seed0 + i, False))
+def run(specs, games, procs, seed0=0, quiet=False):
+    n = len(specs)
+    jobs = [(specs, seed0 + i, r) for i in range(games // n) for r in range(n)]
+    spec_a = specs[0]
     res = []
     t0 = time.time()
     with mp.Pool(procs) as pool:
@@ -75,10 +79,11 @@ def run(spec_a, spec_b, games, procs, seed0=0, quiet=False):
             if not quiet and len(res) % 200 == 0:
                 k = sum(x["a_won"] for x in res)
                 print(f"  {len(res)}/{len(jobs)} {spec_a} wins {k / len(res):.3f}", flush=True)
-    return summarize(spec_a, spec_b, res, time.time() - t0)
+    return summarize(specs, res, time.time() - t0)
 
 
-def summarize(spec_a, spec_b, res, elapsed):
+def summarize(specs, res, elapsed):
+    spec_a, spec_b = specs[0], ",".join(specs[1:])
     n = len(res)
     k = sum(r["a_won"] for r in res)
     draws = sum(not r["a_won"] and not r["b_won"] for r in res)
@@ -97,6 +102,11 @@ def summarize(spec_a, spec_b, res, elapsed):
         "ci95": (lo, hi),
         "a_first_winrate": sum(r["a_won"] for r in first) / max(1, len(first)),
         "a_second_winrate": sum(r["a_won"] for r in second) / max(1, len(second)),
+        "a_seat_winrate": [
+            sum(r["a_won"] for r in res if r["a_seat"] == s)
+            / max(1, sum(r["a_seat"] == s for r in res))
+            for s in range(len(specs))
+        ],
         "a_ms_per_decision": at * 1000,
         "b_ms_per_decision": bt * 1000,
         "avg_turns": sum(r["turns"] for r in res) / n,
@@ -104,7 +114,7 @@ def summarize(spec_a, spec_b, res, elapsed):
     }
     print(
         f"{spec_a} vs {spec_b}: {k}/{n} = {k / n:.3f} [{lo:.3f}, {hi:.3f}] "
-        f"(first {out['a_first_winrate']:.3f}, second {out['a_second_winrate']:.3f}, "
+        f"(by seat {' '.join(f'{w:.3f}' for w in out['a_seat_winrate'])}, "
         f"draws {draws}) ms/dec {out['a_ms_per_decision']:.1f} vs {out['b_ms_per_decision']:.1f} "
         f"[{elapsed:.0f}s]",
         flush=True,
@@ -114,14 +124,13 @@ def summarize(spec_a, spec_b, res, elapsed):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("a")
-    ap.add_argument("b")
+    ap.add_argument("specs", nargs="+")
     ap.add_argument("--games", type=int, default=400)
     ap.add_argument("--procs", type=int, default=30)
     ap.add_argument("--seed0", type=int, default=10_000_000)
     ap.add_argument("--log", default="results.jsonl")
     args = ap.parse_args()
-    out = run(args.a, args.b, args.games, args.procs, args.seed0)
+    out = run(args.specs, args.games, args.procs, args.seed0)
     import json
 
     with open(args.log, "a") as f:
