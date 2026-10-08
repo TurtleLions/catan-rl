@@ -1,0 +1,11 @@
+.venv/
+vendor/
+data/
+__pycache__/
+*.pyc
+# Keep only the final ensemble's numpy weights (models/V2*_s*.npz + FINAL.txt).
+models/*
+!models/V2a_s*.npz
+!models/V2b_s*.npz
+!models/V2c_s*.npz
+!models/*.txt
