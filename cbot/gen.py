@@ -8,6 +8,9 @@ y = 1 if that player went on to win and v = the mover's search value mapped to
 that player. Multiplayer shards hold y = the winner's seat relative to that
 player (0 = itself) and V = the search's per-seat win probabilities, also
 relative. Optional epsilon-random moves add diversity.
+
+Resumable: rerunning with the same arguments skips games whose seeds are
+already in the output's shards (shards are written atomically).
 """
 
 import os
@@ -91,6 +94,15 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    have = sorted(f for f in os.listdir(args.out) if f.startswith("shard") and f.endswith(".npz") and ".tmp" not in f)
+    seen = set()
+    for f in list(have):
+        path = os.path.join(args.out, f)
+        try:
+            seen.update(np.load(path)["g"].tolist())
+        except Exception:  # cut off mid-write by a pre-resume version; replay its games
+            os.replace(path, path + ".bad")
+            have.remove(f)
     mix = parse_mix(args.mix)
     weights = [w for _, w in mix]
     epss = [float(e) for e in args.eps.split(",")]
@@ -100,20 +112,26 @@ def main():
         specs = list(rng.choices(mix, weights)[0][0])
         rng.shuffle(specs)
         jobs.append((specs, args.seed0 + i, rng.choice(epss), args.p_record))
+    # Drawn above for every game so the remaining games keep their tables on resume.
+    jobs = [j for j in jobs if j[1] not in seen]
+    if seen:
+        print(f"resuming: {len(have)} shards, {len(seen)} games recorded, {len(jobs)} to play", flush=True)
 
-    Xs, ys, vs, gs, shard, done = [], [], [], [], 0, 0
+    Xs, ys, vs, gs, shard, done = [], [], [], [], 1 + max((int(f[5:8]) for f in have), default=-1), args.games - len(jobs)
     t0 = time.time()
 
     def flush():
         nonlocal Xs, ys, vs, gs, shard
         if Xs:
+            path = os.path.join(args.out, f"shard{shard:03d}.npz")
             np.savez(
-                os.path.join(args.out, f"shard{shard:03d}.npz"),
+                path + ".tmp.npz",
                 X=np.concatenate(Xs),
                 y=np.concatenate(ys),
                 v=np.concatenate(vs),
                 g=np.concatenate(gs),
             )
+            os.replace(path + ".tmp.npz", path)
             shard += 1
             Xs, ys, vs, gs = [], [], [], []
 
@@ -125,7 +143,7 @@ def main():
                 ys.append(r[1])
                 vs.append(r[2])
                 gs.append(r[3])
-            if done % args.shard_games == 0:
+            if len(Xs) >= args.shard_games or done == args.games:
                 flush()
                 print(f"{done}/{args.games} games, {time.time() - t0:.0f}s", flush=True)
     flush()

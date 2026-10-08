@@ -9,6 +9,7 @@ perspective player instead of a single P(win) logit.
 
 import argparse
 import glob
+import os
 import time
 
 import numpy as np
@@ -94,7 +95,8 @@ def export(model, mean, std, path, hidden, cols, derived=False, players=2):
     for i, (W, b) in enumerate(zip(Ws, bs)):
         arrs[f"W{i}"] = W
         arrs[f"b{i}"] = b
-    np.savez(path, **arrs)
+    np.savez(path + ".tmp.npz", **arrs)
+    os.replace(path + ".tmp.npz", path)
 
 
 def main():
