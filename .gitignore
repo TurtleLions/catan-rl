@@ -13,3 +13,4 @@ models/*
 !models/M0e_s*.npz
 .venv-pypy/
 tools/
+jobs/
