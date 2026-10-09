@@ -18,7 +18,7 @@
 #SBATCH --requeue
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-P=$(nproc)
+P=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 NAME=$1; shift
 export PLAYERS=4
 echo "== $(hostname) $(date) training $NAME on $*"

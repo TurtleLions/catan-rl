@@ -7,7 +7,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-P=${P:-$(nproc)}
+# (nproc obeys OMP_NUM_THREADS, which the Python workers set to 1.)
+export P=${P:-$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)}
 NAME=$(hostname -s)
 TAG=${SLURM_JOB_ID:-$NAME-$$}
 

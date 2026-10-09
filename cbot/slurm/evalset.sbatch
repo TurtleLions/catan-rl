@@ -16,7 +16,7 @@
 #SBATCH --requeue
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-P=$(nproc)
+P=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 GAMES=$1; shift
 mkdir -p runs/evalset
 for name in "$@"; do

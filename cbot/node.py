@@ -51,6 +51,7 @@ ALIVE = 180  # a node is up if its runs/nodes file was touched this recently
 PREFER = os.environ.get("LEADER_PREFER", "dunes matthew").split()
 HOST = os.environ.get("NODE_NAME") or socket.gethostname().split(".")[0]
 TASK = "runs/gen4_task.json"
+PROCS = os.cpu_count()  # set from --procs
 HANDED_OFF = 3  # loop4.sh exit code
 loop_proc = None  # loop4.sh while leading
 
@@ -150,7 +151,8 @@ def lead():
     except FileNotFoundError:
         pass
     log("leading: running cbot/loop4.sh")
-    proc = loop_proc = subprocess.Popen(["cbot/loop4.sh"], start_new_session=True)
+    env = dict(os.environ, P=str(PROCS))  # this node's cores, for the loop's workers
+    proc = loop_proc = subprocess.Popen(["cbot/loop4.sh"], start_new_session=True, env=env)
     lost = threading.Event()
 
     def heartbeat():
@@ -189,6 +191,8 @@ def main():
     ap.add_argument("--procs", type=int, default=os.cpu_count())
     ap.add_argument("--idle-exit", type=int, default=3 * 3600)
     args = ap.parse_args()
+    global PROCS
+    PROCS = args.procs
 
     def on_term(signum, frame):  # Slurm preemption / scancel / kill: hand over quickly
         if loop_proc is not None and loop_proc.poll() is None:

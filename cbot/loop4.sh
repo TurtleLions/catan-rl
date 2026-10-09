@@ -24,7 +24,8 @@
 # keeps finished nets, and a finished eval is read back from runs/eval_M<r>.rate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-P=${P:-$(nproc)}
+# (nproc obeys OMP_NUM_THREADS, which cbot.node sets to 1 for its workers.)
+P=${P:-$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)}
 PY=.venv/bin/python
 export PLAYERS=4
 
@@ -69,7 +70,7 @@ while :; do
   # 1. Generate with the current best bot (opening shortlist for speed).
   if [ ! -f "$out/DONE" ]; then
     B="NN:$best:initf=2:openk=15"
-    log "round $r: generating $GAMES games into $out with $best, mix $MIX"
+    log "round $r: generating $GAMES games into $out with $best ($(hostname -s), $P procs), mix $MIX"
     # The other jobs (cbot/node.py) pick up chunks of this task; alone, this
     # node plays every chunk. Marks $out/DONE.
     $PY -m cbot.genpool coordinate --task runs/gen4_task.json --procs "$P" \
@@ -98,7 +99,7 @@ while :; do
     # Each trainer holds the whole dataset (~11 GB at 30M rows): run all six at
     # once only with 160+ GB (matthew); otherwise three at a time.
     mem_gb=$(( ${SLURM_MEM_PER_NODE:-$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))} / 1024 ))
-    log "round $r: training M$r on ${dirs[*]} ($(hostname -s), ${mem_gb} GB)"
+    log "round $r: training M$r on ${dirs[*]} ($(hostname -s), $P procs, ${mem_gb} GB)"
     if [ "$mem_gb" -ge 160 ]; then
       T=$(( P / 6 ))
       STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1 &

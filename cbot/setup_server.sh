@@ -31,12 +31,12 @@ fi
 
 echo "== versions"
 .venv/bin/python -c 'import sys, numpy, torch; print(sys.version.split()[0], "numpy", numpy.__version__, "torch", torch.__version__)'
-echo "cores: $(nproc)"
+echo "cores: $(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)"
 
 echo "== cbot.fast equivalence vs stock Catanatron (expect 2/2 identical)"
 .venv/bin/python -m cbot.check_fast --games 2 --table AB,AB,F,F
 
 echo "== 4-player arena smoke test (bot vs 3 AlphaBeta, 1 game per core)"
-N=$(nproc)
+N=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
 .venv/bin/python -m cbot.arena "NN:$(cat models/M0.txt):initf=2:openk=15" AB AB AB \
   --games $(( N / 4 * 4 )) --procs "$N" --seed0 90000000 --log /dev/null
