@@ -73,7 +73,7 @@ while :; do
 
   # 1. Generate with the current best bot (opening shortlist for speed).
   if [ ! -f "$out/DONE" ]; then
-    B="NN:$best:initf=2:openk=15"
+    B="NN:$best:initf=2:openk=15$SEARCH"
     log "round $r: generating $GAMES games into $out with $best ($(hostname -s), $P procs), mix $MIX"
     # The other jobs (cbot/node.py) pick up chunks of this task; alone, this
     # node plays every chunk. Marks $out/DONE.
@@ -88,7 +88,7 @@ while :; do
   if [ "$r" -lt "$LAST_ROUND" ] && [ ! -f "data/m$((r + 1))s/DONE" ]; then
     $PY -m cbot.genpool post --task runs/gen4_task.json --out "data/m$((r + 1))s" --games "$GAMES" \
       --p-record 0.2 --seed0 $((100000000 + (r + 1) * 1000000)) --eps 0,0.03 \
-      --mix "${MIX//BEST/NN:$best:initf=2:openk=15}" >> "runs/gen_m$((r + 1))s.log" 2>&1
+      --mix "${MIX//BEST/NN:$best:initf=2:openk=15$SEARCH}" >> "runs/gen_m$((r + 1))s.log" 2>&1
   fi
 
   # 2. Train on round 0 plus the last TRAIN_BACK rounds (all data dirs of each).
@@ -123,7 +123,7 @@ while :; do
   #    if H2H_GAMES > 0, vs three copies of the current best (25% = equal).
   cand=$(cat "models/M$r.txt")
   if [ ! -f "runs/eval_M$r.rate" ]; then
-    rate=$(arena_rate "$EVAL_SEED0" "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2" AB AB AB) || exit 1
+    rate=$(arena_rate "$EVAL_SEED0" "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2$SEARCH" AB AB AB) || exit 1
     echo "$rate" > "runs/eval_M$r.rate"
     log "round $r: M$r vs 3AB = $rate (best so far $best_rate) | $(tail -n 1 "runs/eval_M$r.log")"
   fi
@@ -131,8 +131,8 @@ while :; do
   h2h=""
   if [ "$H2H_GAMES" -gt 0 ]; then
     if [ ! -f "runs/h2h_M$r.rate" ]; then
-      bb="NN:$best:initf=2"
-      h=$(arena_rate 30000000 "$H2H_GAMES" "runs/h2h_M$r.log" "NN:$cand:initf=2" "$bb" "$bb" "$bb") || exit 1
+      bb="NN:$best:initf=2$SEARCH"
+      h=$(arena_rate 30000000 "$H2H_GAMES" "runs/h2h_M$r.log" "NN:$cand:initf=2$SEARCH" "$bb" "$bb" "$bb") || exit 1
       echo "$h" > "runs/h2h_M$r.rate"
       log "round $r: M$r vs 3x best ($best) = $h | $(tail -n 1 "runs/h2h_M$r.log")"
     fi
@@ -144,11 +144,11 @@ while :; do
     ok=$($PY -c "print(int($h2h >= $H2H_MIN))")
     why="h2h $h2h vs min $H2H_MIN"
   elif [ "$GATE" = both ] && [ -n "$h2h" ]; then
-    ok=$($PY -c "print(int($h2h >= $H2H_MIN and $rate >= $best_rate - 0.03))")
-    why="h2h $h2h vs min $H2H_MIN, vs 3AB $rate vs best $best_rate - 0.03"
+    ok=$($PY -c "print(int($h2h >= $H2H_MIN and $rate >= $best_rate - $GATE_TOL))")
+    why="h2h $h2h vs min $H2H_MIN, vs 3AB $rate vs best $best_rate - $GATE_TOL"
   else
-    ok=$($PY -c "print(int($rate >= $best_rate - 0.03))")
-    why="vs 3AB $rate vs best $best_rate - 0.03"
+    ok=$($PY -c "print(int($rate >= $best_rate - $GATE_TOL))")
+    why="vs 3AB $rate vs best $best_rate - $GATE_TOL"
   fi
   if [ "$ok" = 1 ]; then
     echo "$cand" > models/BEST4.txt
