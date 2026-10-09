@@ -41,6 +41,21 @@ from cbot.gen import legacy_seeds, make_jobs, play_record
 
 STALE = int(os.environ.get("GENPOOL_STALE", 300))  # seconds
 TOUCH = 60
+# No game result for this long means the pool lost work (a worker process died,
+# e.g. killed for memory, and its game's result never comes): give the open
+# chunks back and let the caller start a new pool.
+STUCK = int(os.environ.get("GENPOOL_STUCK", 1200))
+# Worker processes are replaced after this many games, so memory one of them
+# accumulates over a night of games is given back.
+TASKS_PER_WORKER = 200
+
+
+class PoolStuck(Exception):
+    pass
+
+
+def new_pool(procs):
+    return mp.Pool(procs, maxtasksperchild=TASKS_PER_WORKER)
 ME = f"{socket.gethostname()}:{os.environ.get('SLURM_JOB_ID', '-')}:{os.getpid()}"
 
 
@@ -158,7 +173,16 @@ def work(task, pool, procs, task_path=None, stop=None):
             inflight += 1
         if inflight == 0:
             return wrote
-        k, r = results.get()
+        try:
+            k, r = results.get(timeout=STUCK)
+        except queue.Empty:
+            for i in open_:
+                try:
+                    os.remove(os.path.join(claims, str(i)))
+                except FileNotFoundError:
+                    pass
+            log(f"no game result for {STUCK}s; released chunks {sorted(open_)}, restarting the pool")
+            raise PoolStuck
         inflight -= 1
         if isinstance(r, BaseException):
             raise r
@@ -217,10 +241,15 @@ def main():
     if args.mode == "post":
         return
     t0 = time.time()
-    with mp.Pool(args.procs) as pool:
-        while not all_done(task):
+    pool = new_pool(args.procs)
+    while not all_done(task):
+        try:
             if work(task, pool, args.procs, args.task) == 0:
                 time.sleep(30)  # remaining chunks are claimed by other jobs
+        except PoolStuck:
+            pool.terminate()
+            pool = new_pool(args.procs)
+    pool.terminate()
     open(os.path.join(args.out, "DONE"), "w").close()
     log(f"{args.out} DONE in {time.time() - t0:.0f}s")
 

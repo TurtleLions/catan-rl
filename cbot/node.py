@@ -31,7 +31,6 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
 import argparse
-import multiprocessing as mp
 import signal
 import socket
 import subprocess
@@ -227,11 +226,17 @@ def main():
         task = read_task(TASK)
         if task and not os.path.exists(os.path.join(task["out"], "DONE")):
             if pool is None:
-                pool = mp.Pool(args.procs)
+                pool = genpool.new_pool(args.procs)
             # Stop claiming chunks as soon as this node should lead, so a leader
             # lost mid-training is replaced within a chunk, not a round.
-            if genpool.work(task, pool, args.procs, TASK, stop=watch.can_lead):
-                idle_since = time.time()
+            try:
+                if genpool.work(task, pool, args.procs, TASK, stop=watch.can_lead):
+                    idle_since = time.time()
+                    continue
+            except genpool.PoolStuck:
+                pool.terminate()
+                pool.join()
+                pool = None
                 continue
         time.sleep(30)
     log(f"idle for {args.idle_exit}s, exiting")
