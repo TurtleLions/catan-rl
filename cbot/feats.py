@@ -19,14 +19,19 @@ _PROMPTS = list(ActionPrompt)
 NUM_NODES = 54
 
 
-@functools.lru_cache(maxsize=64)
 def _node_pips(catan_map):
+    # Kept on the map, not in an lru_cache: a cache keyed by maps keeps old
+    # games' maps alive, with their search caches (cbot.fast), GBs per worker.
+    pips = getattr(catan_map, "_cbot_pips", None)
+    if pips is not None:
+        return pips
     pips = np.zeros(NUM_NODES, dtype=np.float32)
     for node_id, tiles in catan_map.adjacent_tiles.items():
         if node_id < NUM_NODES:
             pips[node_id] = sum(
                 number_probability(t.number) for t in tiles if t.resource is not None
             )
+    catan_map._cbot_pips = pips
     return pips
 
 

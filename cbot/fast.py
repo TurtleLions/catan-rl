@@ -25,6 +25,7 @@ Installed on import of cbot.players; set CBOT_NOFAST=1 to run stock Catanatron.
 
 import os
 import random
+import weakref
 from collections import defaultdict
 
 from catanatron import features as F
@@ -136,15 +137,18 @@ def _game_copy(self):
 
 
 _CACHE_MAX = 200_000
+_cache_map, _cache = None, {}  # weakref to the map the cache is for; its entries
 
 
 def _board_cache(board):
-    """Per-map cache dict (dies with the map, so entries never leak across games)."""
+    """Cache dict for the current game's map, emptied when another map shows up.
+    Not stored on the map: Catanatron's lru_caches keyed by maps keep old maps
+    alive, and with them their caches (GBs per process over many games)."""
+    global _cache_map, _cache
     m = board.map
-    c = getattr(m, "_cbot_cache", None)
-    if c is None or len(c) > _CACHE_MAX:
-        c = m._cbot_cache = {}
-    return c
+    if _cache_map is None or _cache_map() is not m or len(_cache) > _CACHE_MAX:
+        _cache_map, _cache = weakref.ref(m), {}
+    return _cache
 
 
 def _board_copy(self):
