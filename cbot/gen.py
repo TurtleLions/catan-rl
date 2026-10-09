@@ -81,6 +81,30 @@ def play_record(args):
     return X, y, V, np.full(len(y), seed, dtype=np.int64)
 
 
+def make_jobs(games, seed0, mix, eps, p_record):
+    """Game i: (seat specs, seed seed0 + i, eps, p_record). Drawn for every game
+    from one rng, so any subset (resume, chunks) gets the same tables."""
+    mix = parse_mix(mix)
+    weights = [w for _, w in mix]
+    epss = [float(e) for e in eps.split(",")]
+    rng = random.Random(seed0)
+    jobs = []
+    for i in range(games):
+        specs = list(rng.choices(mix, weights)[0][0])
+        rng.shuffle(specs)
+        jobs.append((specs, seed0 + i, rng.choice(epss), p_record))
+    return jobs
+
+
+def legacy_seeds(out):
+    """Seeds of games already in shard*.npz files written by main()."""
+    seen = set()
+    for f in sorted(os.listdir(out)):
+        if f.startswith("shard") and f.endswith(".npz") and ".tmp" not in f:
+            seen.update(np.load(os.path.join(out, f))["g"].tolist())
+    return seen
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -103,16 +127,7 @@ def main():
         except Exception:  # cut off mid-write by a pre-resume version; replay its games
             os.replace(path, path + ".bad")
             have.remove(f)
-    mix = parse_mix(args.mix)
-    weights = [w for _, w in mix]
-    epss = [float(e) for e in args.eps.split(",")]
-    rng = random.Random(args.seed0)
-    jobs = []
-    for i in range(args.games):
-        specs = list(rng.choices(mix, weights)[0][0])
-        rng.shuffle(specs)
-        jobs.append((specs, args.seed0 + i, rng.choice(epss), args.p_record))
-    # Drawn above for every game so the remaining games keep their tables on resume.
+    jobs = make_jobs(args.games, args.seed0, args.mix, args.eps, args.p_record)
     jobs = [j for j in jobs if j[1] not in seen]
     if seen:
         print(f"resuming: {len(have)} shards, {len(seen)} games recorded, {len(jobs)} to play", flush=True)

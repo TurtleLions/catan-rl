@@ -18,7 +18,7 @@ import torch.nn as nn
 
 
 def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None):
-    files = sorted(f for d in dirs for f in glob.glob(f"{d}/*.npz"))
+    files = sorted(f for d in dirs for f in glob.glob(f"{d}/*.npz") if not f.endswith(".tmp.npz"))
     Xs, ys = [], []
     players = 2
     for f in files:

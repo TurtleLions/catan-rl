@@ -4,8 +4,10 @@
 # Rounds and settings: cbot/loop4.conf, overridden live by runs/loop4.conf.
 # If preempted, Slurm requeues the job; the loop resumes where it stopped and
 # the restarted job runs the repo's current code (snapshot refreshed on start).
+# Extra nodes for data generation: cbot/slurm/genhelp.sbatch.
 # Output: runs/slurm-<jobid>.out (appended across restarts), runs/loop4.log.
 #SBATCH --job-name=catan4
+#SBATCH --account=scc
 #SBATCH --partition=long
 #SBATCH --nodelist=matthew
 #SBATCH --nodes=1

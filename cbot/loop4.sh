@@ -16,8 +16,8 @@
 #
 # Resumable at any point (for Slurm preemption + requeue): the round to run is
 # the one after the last round with a gate line in runs/loop4.log; generation
-# resumes from its shards, training keeps finished nets, and a finished eval is
-# read back from runs/eval_M<r>.rate.
+# resumes from its chunks (shared with helper jobs on other nodes), training
+# keeps finished nets, and a finished eval is read back from runs/eval_M<r>.rate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 P=${P:-$(nproc)}
@@ -61,10 +61,11 @@ while :; do
   if [ ! -f "$out/DONE" ]; then
     B="NN:$best:initf=2:openk=15"
     log "round $r: generating $GAMES games into $out with $best, mix $MIX"
-    $PY -m cbot.gen --out "$out" --games "$GAMES" --procs "$P" --p-record 0.2 \
-      --seed0 $((100000000 + r * 1000000)) --eps 0,0.03 --shard-games 1000 \
-      --mix "${MIX//BEST/$B}" >> "runs/gen_m${r}s.log" 2>&1
-    touch "$out/DONE"
+    # Helper jobs (cbot/slurm/genhelp.sbatch) on other nodes pick up chunks of
+    # this task; without them this node plays every chunk. Marks $out/DONE.
+    $PY -m cbot.genpool coordinate --task runs/gen4_task.json --procs "$P" \
+      --out "$out" --games "$GAMES" --p-record 0.2 --seed0 $((100000000 + r * 1000000)) \
+      --eps 0,0.03 --mix "${MIX//BEST/$B}" >> "runs/gen_m${r}s.log" 2>&1
   fi
 
   # 2. Train on round 0 plus rounds r-1 and r (all data dirs for those rounds).
