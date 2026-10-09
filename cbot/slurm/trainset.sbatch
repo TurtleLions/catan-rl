@@ -5,7 +5,9 @@
 #   sbatch -w matthew cbot/slurm/trainset.sbatch M4w data/m0 data/m0b data/m1s ...
 # Writes models/<name>.txt and runs/evalset/<name>_4000.log. Rerunnable: finished
 # nets and evals are kept. SEQ=1 trains three nets at a time even with 160+ GB
-# (each net holds the whole dataset, ~2x that while loading).
+# (each net holds the whole dataset, ~2x that while loading). STAGGER=<s> sets the
+# delay between nets' starts (default 60); with a lot of data, 1200 keeps their loads
+# from overlapping.
 #SBATCH --job-name=catan4-train
 #SBATCH --account=scc
 #SBATCH --partition=long
@@ -27,14 +29,14 @@ if [ ! -f "models/$NAME.txt" ]; then
   mem_gb=$(( ${SLURM_MEM_PER_NODE:-$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))} / 1024 ))
   if [ "$mem_gb" -ge 160 ] && [ "${SEQ:-0}" != 1 ]; then
     T=$(( P / 6 ))
-    STAGGER=60 cbot/train_ens.sh "${NAME}a" 3 0.5 "$T" "$@" > "runs/train_${NAME}a.log" 2>&1 &
+    STAGGER=${STAGGER:-60} cbot/train_ens.sh "${NAME}a" 3 0.5 "$T" "$@" > "runs/train_${NAME}a.log" 2>&1 &
     sleep 30
-    STAGGER=60 cbot/train_ens.sh "${NAME}b" 3 0.3 "$T" "$@" > "runs/train_${NAME}b.log" 2>&1 &
+    STAGGER=${STAGGER:-60} cbot/train_ens.sh "${NAME}b" 3 0.3 "$T" "$@" > "runs/train_${NAME}b.log" 2>&1 &
     wait
   else
     T=$(( P / 3 ))
-    STAGGER=60 cbot/train_ens.sh "${NAME}a" 3 0.5 "$T" "$@" > "runs/train_${NAME}a.log" 2>&1
-    STAGGER=60 cbot/train_ens.sh "${NAME}b" 3 0.3 "$T" "$@" > "runs/train_${NAME}b.log" 2>&1
+    STAGGER=${STAGGER:-60} cbot/train_ens.sh "${NAME}a" 3 0.5 "$T" "$@" > "runs/train_${NAME}a.log" 2>&1
+    STAGGER=${STAGGER:-60} cbot/train_ens.sh "${NAME}b" 3 0.3 "$T" "$@" > "runs/train_${NAME}b.log" 2>&1
   fi
   echo "$(cat "models/${NAME}a.txt")+$(cat "models/${NAME}b.txt")" > "models/$NAME.txt"
 fi
