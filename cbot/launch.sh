@@ -62,7 +62,9 @@ for n in $PLAIN_NODES; do
     echo "$n: already running (pid $(cat "runs/pids/$n.pid"))"
     continue
   fi
-  ssh -n "$n" "cd '$ROOT' && { setsid nohup cbot/run_node.sh >> 'runs/node-$n.out' 2>&1 < /dev/null & echo \$! > 'runs/pids/$n.pid'; }"
+  # Same timezone as here, so log times line up across nodes.
+  tz=$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)
+  ssh -n "$n" "cd '$ROOT' && { ${tz:+TZ='$tz'} setsid nohup cbot/run_node.sh >> 'runs/node-$n.out' 2>&1 < /dev/null & echo \$! > 'runs/pids/$n.pid'; }"
   sleep 2
   if plain_alive "$n"; then
     echo "$n: started (pid $(cat "runs/pids/$n.pid"), output runs/node-$n.out)"
