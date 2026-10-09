@@ -2,10 +2,15 @@
 
     python -m cbot.genpool coordinate --task runs/gen4_task.json --procs 64 \\
         --out data/m3s --games 30000 --seed0 ... --mix ...   # same args as cbot.gen
+    python -m cbot.genpool post --task runs/gen4_task.json --out ... (same args)
 
 coordinate (run by the loop's leader, cbot/loop4.sh) writes the task file,
 works on it until every chunk is written, and then marks the output DONE. The
-other jobs (cbot/node.py) call work() on the same task.
+other jobs (cbot/node.py) call work() on the same task. post only writes the
+task file, so the other jobs can start on it while the leader is busy (the
+loop posts the next round while it trains). Rewriting a task with another
+generator keeps the chunks already written: the seeds and table layout stay
+the same, only the bot in the BEST seats changes.
 
 The games (exactly cbot.gen's game list) are split into chunks of --chunk
 games. A process claims chunk k by creating claims/<k> in the output directory
@@ -87,9 +92,10 @@ def write_chunk(out, k, parts):
     os.replace(p + ".tmp.npz", p)
 
 
-def work(task, pool, procs):
-    """Play claimable chunks of the task until none is left to claim; returns
-    the number of chunks this process wrote."""
+def work(task, pool, procs, task_path=None):
+    """Play claimable chunks of the task until none is left to claim, or until
+    the task file (task_path) no longer holds this task; returns the number of
+    chunks this process wrote."""
     out, C = task["out"], task["chunk"]
     claims = os.path.join(out, "claims")
     os.makedirs(claims, exist_ok=True)
@@ -105,6 +111,10 @@ def work(task, pool, procs):
 
     def claim_next():
         nonlocal scan
+        if scan < nchunk and task_path and read_task(task_path) != task:
+            log("task rewritten; finishing open chunks")
+            scan = nchunk  # claim nothing more (e.g. new generator for the rest of the round)
+            return None
         while scan < nchunk:
             k = scan
             scan += 1
@@ -179,7 +189,7 @@ def read_task(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["coordinate"])
+    ap.add_argument("mode", choices=["coordinate", "post"])
     ap.add_argument("--task", required=True)
     ap.add_argument("--procs", type=int, default=os.cpu_count())
     # Same meaning as in cbot.gen:
@@ -198,11 +208,13 @@ def main():
     with open(tmp, "w") as f:
         json.dump(task, f)
     os.replace(tmp, args.task)
-    log(f"task {task}")
+    log(f"{args.mode} task {task}")
+    if args.mode == "post":
+        return
     t0 = time.time()
     with mp.Pool(args.procs) as pool:
         while not all_done(task):
-            if work(task, pool, args.procs) == 0:
+            if work(task, pool, args.procs, args.task) == 0:
                 time.sleep(30)  # remaining chunks are claimed by other jobs
     open(os.path.join(args.out, "DONE"), "w").close()
     log(f"{args.out} DONE in {time.time() - t0:.0f}s")

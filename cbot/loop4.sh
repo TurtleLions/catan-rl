@@ -71,6 +71,15 @@ while :; do
       --eps 0,0.03 --mix "${MIX//BEST/$B}" >> "runs/gen_m${r}s.log" 2>&1
   fi
 
+  # While this node trains and evaluates, the other jobs start the next round's
+  # generation with the current best; if this round's model is adopted, the
+  # next round switches to it for the chunks not yet played.
+  if [ "$r" -lt "$LAST_ROUND" ] && [ ! -f "data/m$((r + 1))s/DONE" ]; then
+    $PY -m cbot.genpool post --task runs/gen4_task.json --out "data/m$((r + 1))s" --games "$GAMES" \
+      --p-record 0.2 --seed0 $((100000000 + (r + 1) * 1000000)) --eps 0,0.03 \
+      --mix "${MIX//BEST/NN:$best:initf=2:openk=15}" >> "runs/gen_m$((r + 1))s.log" 2>&1
+  fi
+
   # 2. Train on round 0 plus rounds r-1 and r (all data dirs for those rounds).
   if [ ! -f "models/M$r.txt" ]; then
     dirs=(data/m0 data/m0b)

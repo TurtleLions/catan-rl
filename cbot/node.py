@@ -131,7 +131,7 @@ def main():
         if task and not os.path.exists(os.path.join(task["out"], "DONE")):
             if pool is None:
                 pool = mp.Pool(args.procs)
-            if genpool.work(task, pool, args.procs):
+            if genpool.work(task, pool, args.procs, TASK):
                 idle_since = time.time()
                 continue
         time.sleep(30)
