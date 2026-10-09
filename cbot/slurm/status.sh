@@ -7,6 +7,15 @@ N=${1:-8}
 echo "== jobs"
 squeue -u "$USER" -o "%.8i %.13j %.9T %.10M %.8N %R" | sed 's/^/  /'
 
+echo "== nodes (last heartbeat)"
+now=$(date +%s)
+for f in runs/nodes/*; do
+  [ -e "$f" ] || continue
+  age=$(( now - $(stat -c %Y "$f") ))
+  state=up; [ "$age" -gt 180 ] && state=gone
+  printf "  %-10s %5ss ago  %s\n" "$(basename "$f")" "$age" "$state"
+done
+
 if [ -f runs/loop4.leader ]; then
   age=$(( $(date +%s) - $(stat -c %Y runs/loop4.leader) ))
   echo "== leader: $(cat runs/loop4.leader) (lease refreshed ${age}s ago)"
@@ -33,7 +42,7 @@ echo "== generation $dir: $done/$nchunk chunks written, $claimed in progress ($s
 gen=runs/gen_$(basename "$dir").log
 helpers=$(squeue -h -u "$USER" -n catan4 -t RUNNING -o "runs/slurm-%i.out" | tr '\n' ' ')
 # shellcheck disable=SC2086
-grep -h "$dir: chunk .* written" "$gen" $helpers 2>/dev/null | .venv/bin/python -c '
+grep -h "$dir: chunk .* written" "$gen" $helpers runs/node-*.out 2>/dev/null | .venv/bin/python -c '
 import sys, time
 from datetime import datetime
 now = time.time()

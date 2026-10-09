@@ -11,9 +11,10 @@
 # Env: P (workers/threads, default nproc).
 #
 # Round r writes data/m<r>s, trains models/M<r> (3 nets at lam .5 + 3 at lam .3)
-# on round 0 plus the last two rounds, and evaluates it vs three AlphaBetas on
-# the fixed development seeds (20M), plus optionally head-to-head vs the current
-# best (seeds 30M). See loop4.conf for how the next generator is chosen.
+# on round 0 plus the last TRAIN_BACK rounds, and evaluates it vs three
+# AlphaBetas (EVAL_SEED0), plus optionally head-to-head vs the current best
+# (seeds 30M). See loop4.conf for how the next generator is chosen. Exits 3 at
+# a round start if runs/loop4.handoff exists (another node should lead).
 # State: models/BEST4.txt (ensemble spec), runs/best4_rate.txt, runs/loop4.jsonl,
 # runs/loop4.log.
 #
@@ -56,6 +57,11 @@ while :; do
     log "loop done (next round $r > LAST_ROUND $LAST_ROUND)"
     break
   fi
+  if [ -f runs/loop4.handoff ]; then  # a preferred node is up (cbot/node.py)
+    rm -f runs/loop4.handoff
+    log "round $r: handing over to a preferred node"
+    exit 3
+  fi
   best=$(cat models/BEST4.txt)
   best_rate=$(cat runs/best4_rate.txt)
   out=data/m${r}s
@@ -80,10 +86,10 @@ while :; do
       --mix "${MIX//BEST/NN:$best:initf=2:openk=15}" >> "runs/gen_m$((r + 1))s.log" 2>&1
   fi
 
-  # 2. Train on round 0 plus rounds r-1 and r (all data dirs for those rounds).
+  # 2. Train on round 0 plus the last TRAIN_BACK rounds (all data dirs of each).
   if [ ! -f "models/M$r.txt" ]; then
     dirs=(data/m0 data/m0b)
-    for k in $((r - 1)) "$r"; do
+    for k in $(seq $((r - TRAIN_BACK + 1)) "$r"); do
       if [ "$k" -lt 1 ]; then continue; fi
       for d in data/m${k} data/m${k}b data/m${k}s; do
         if [ -d "$d" ]; then dirs+=("$d"); fi
@@ -112,7 +118,7 @@ while :; do
   #    if H2H_GAMES > 0, vs three copies of the current best (25% = equal).
   cand=$(cat "models/M$r.txt")
   if [ ! -f "runs/eval_M$r.rate" ]; then
-    rate=$(arena_rate 20000000 "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2" AB AB AB)
+    rate=$(arena_rate "$EVAL_SEED0" "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2" AB AB AB)
     echo "$rate" > "runs/eval_M$r.rate"
     log "round $r: M$r vs 3AB = $rate (best so far $best_rate) | $(tail -n 1 "runs/eval_M$r.log")"
   fi
