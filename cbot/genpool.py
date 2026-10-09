@@ -2,21 +2,19 @@
 
     python -m cbot.genpool coordinate --task runs/gen4_task.json --procs 64 \\
         --out data/m3s --games 30000 --seed0 ... --mix ...   # same args as cbot.gen
-    python -m cbot.genpool help --task runs/gen4_task.json --procs 44
 
-coordinate writes the task file, works on it until every chunk is written, and
-then marks the output DONE. help loops: it works on the current task while
-unclaimed chunks remain, otherwise waits, and exits after --idle-exit seconds
-with nothing to do.
+coordinate (run by the loop's leader, cbot/loop4.sh) writes the task file,
+works on it until every chunk is written, and then marks the output DONE. The
+other jobs (cbot/node.py) call work() on the same task.
 
 The games (exactly cbot.gen's game list) are split into chunks of --chunk
 games. A process claims chunk k by creating claims/<k> in the output directory
 (exclusive create), plays it, and writes c<k>.npz atomically (c<k>.empty if no
-state was recorded). Claims are refreshed while their games run; a claim not
-refreshed for STALE seconds (its job was preempted) is taken over. Two
-processes can rarely end up on the same chunk; both write the same file, so
-the only cost is the duplicated work. Games already in shard*.npz files from
-cbot.gen are skipped, so a cbot.gen run can be finished here.
+state was recorded). Claims are refreshed every minute while their games run;
+a claim not refreshed for STALE seconds (its job was preempted) is taken over.
+Two processes can rarely end up on the same chunk; both write the same file,
+so the only cost is the duplicated work. Games already in shard*.npz files
+from cbot.gen are skipped, so a cbot.gen run can be finished here.
 """
 
 import os
@@ -36,7 +34,7 @@ import numpy as np
 
 from cbot.gen import legacy_seeds, make_jobs, play_record
 
-STALE = int(os.environ.get("GENPOOL_STALE", 900))  # seconds; generous because node clocks can differ
+STALE = int(os.environ.get("GENPOOL_STALE", 300))  # seconds
 TOUCH = 60
 ME = f"{socket.gethostname()}:{os.environ.get('SLURM_JOB_ID', '-')}:{os.getpid()}"
 
@@ -181,11 +179,10 @@ def read_task(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["coordinate", "help"])
+    ap.add_argument("mode", choices=["coordinate"])
     ap.add_argument("--task", required=True)
     ap.add_argument("--procs", type=int, default=os.cpu_count())
-    ap.add_argument("--idle-exit", type=int, default=3 * 3600)
-    # coordinate only (same meaning as in cbot.gen):
+    # Same meaning as in cbot.gen:
     ap.add_argument("--out")
     ap.add_argument("--games", type=int)
     ap.add_argument("--mix")
@@ -195,30 +192,20 @@ def main():
     ap.add_argument("--chunk", type=int, default=200)
     args = ap.parse_args()
 
+    task = {k: getattr(args, k) for k in ("out", "games", "mix", "eps", "p_record", "seed0", "chunk")}
+    os.makedirs(args.out, exist_ok=True)
+    tmp = f"{args.task}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(task, f)
+    os.replace(tmp, args.task)
+    log(f"task {task}")
+    t0 = time.time()
     with mp.Pool(args.procs) as pool:
-        if args.mode == "coordinate":
-            task = {k: getattr(args, k) for k in ("out", "games", "mix", "eps", "p_record", "seed0", "chunk")}
-            os.makedirs(args.out, exist_ok=True)
-            tmp = f"{args.task}.tmp.{os.getpid()}"
-            with open(tmp, "w") as f:
-                json.dump(task, f)
-            os.replace(tmp, args.task)
-            log(f"task {task}")
-            t0 = time.time()
-            while not all_done(task):
-                if work(task, pool, args.procs) == 0:
-                    time.sleep(30)  # remaining chunks are claimed by other jobs
-            open(os.path.join(args.out, "DONE"), "w").close()
-            log(f"{args.out} DONE in {time.time() - t0:.0f}s")
-        else:
-            idle_since = time.time()
-            while time.time() - idle_since < args.idle_exit:
-                task = read_task(args.task)
-                if task and not os.path.exists(os.path.join(task["out"], "DONE")) and work(task, pool, args.procs):
-                    idle_since = time.time()
-                else:
-                    time.sleep(30)
-            log(f"idle for {args.idle_exit}s, exiting")
+        while not all_done(task):
+            if work(task, pool, args.procs) == 0:
+                time.sleep(30)  # remaining chunks are claimed by other jobs
+    open(os.path.join(args.out, "DONE"), "w").close()
+    log(f"{args.out} DONE in {time.time() - t0:.0f}s")
 
 
 if __name__ == "__main__":

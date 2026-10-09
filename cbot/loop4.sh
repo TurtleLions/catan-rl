@@ -2,6 +2,9 @@
 # 4-player expert iteration: generate -> train -> evaluate, round after round.
 #   cbot/loop4.sh
 #
+# Run by whichever Slurm job holds the leader lease (cbot/node.py,
+# cbot/slurm/loop4.sbatch); if that job dies, another one reruns this script.
+#
 # Settings come from cbot/loop4.conf, overridden by runs/loop4.conf if present.
 # runs/loop4.conf is re-read at the start of every round, so a running (or
 # requeued) job picks up edits to it, e.g. LAST_ROUND or a self-play MIX.
@@ -16,7 +19,7 @@
 #
 # Resumable at any point (for Slurm preemption + requeue): the round to run is
 # the one after the last round with a gate line in runs/loop4.log; generation
-# resumes from its chunks (shared with helper jobs on other nodes), training
+# resumes from its chunks (shared with the jobs on other nodes), training
 # keeps finished nets, and a finished eval is read back from runs/eval_M<r>.rate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -61,8 +64,8 @@ while :; do
   if [ ! -f "$out/DONE" ]; then
     B="NN:$best:initf=2:openk=15"
     log "round $r: generating $GAMES games into $out with $best, mix $MIX"
-    # Helper jobs (cbot/slurm/genhelp.sbatch) on other nodes pick up chunks of
-    # this task; without them this node plays every chunk. Marks $out/DONE.
+    # The other jobs (cbot/node.py) pick up chunks of this task; alone, this
+    # node plays every chunk. Marks $out/DONE.
     $PY -m cbot.genpool coordinate --task runs/gen4_task.json --procs "$P" \
       --out "$out" --games "$GAMES" --p-record 0.2 --seed0 $((100000000 + r * 1000000)) \
       --eps 0,0.03 --mix "${MIX//BEST/$B}" >> "runs/gen_m${r}s.log" 2>&1
@@ -77,12 +80,21 @@ while :; do
         if [ -d "$d" ]; then dirs+=("$d"); fi
       done
     done
-    log "round $r: training M$r on ${dirs[*]}"
-    T=$(( P / 6 ))
-    STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1 &
-    sleep 30
-    STAGGER=60 cbot/train_ens.sh "M${r}b" 3 0.3 "$T" "${dirs[@]}" > "runs/train_M${r}b.log" 2>&1 &
-    wait
+    # Each trainer holds the whole dataset (~11 GB at 30M rows): run all six at
+    # once only with 160+ GB (matthew); otherwise three at a time.
+    mem_gb=$(( ${SLURM_MEM_PER_NODE:-$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))} / 1024 ))
+    log "round $r: training M$r on ${dirs[*]} ($(hostname -s), ${mem_gb} GB)"
+    if [ "$mem_gb" -ge 160 ]; then
+      T=$(( P / 6 ))
+      STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1 &
+      sleep 30
+      STAGGER=60 cbot/train_ens.sh "M${r}b" 3 0.3 "$T" "${dirs[@]}" > "runs/train_M${r}b.log" 2>&1 &
+      wait
+    else
+      T=$(( P / 3 ))
+      STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1
+      STAGGER=60 cbot/train_ens.sh "M${r}b" 3 0.3 "$T" "${dirs[@]}" > "runs/train_M${r}b.log" 2>&1
+    fi
     echo "$(cat "models/M${r}a.txt")+$(cat "models/M${r}b.txt")" > "models/M$r.txt"
     log "round $r: val losses $(grep -h 'best val' runs/train_M${r}a_s*.log runs/train_M${r}b_s*.log | awk '{print $3}' | tr '\n' ' ')"
   fi
