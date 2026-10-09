@@ -103,17 +103,33 @@ while :; do
     # Each trainer holds the whole dataset (~11 GB at 30M rows): run all six at
     # once only with 160+ GB (matthew); otherwise three at a time.
     mem_gb=$(( ${SLURM_MEM_PER_NODE:-$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 ))} / 1024 ))
-    log "round $r: training M$r on ${dirs[*]} ($(hostname -s), $P procs, ${mem_gb} GB)"
+    # The trainers use few of their threads (small net; batch sampling is serial),
+    # so GEN_WHILE_TRAINING of this node's cores play the posted next round meanwhile.
+    GP=0
+    if [ "$r" -lt "$LAST_ROUND" ] && [ "$GEN_WHILE_TRAINING" -gt 0 ]; then
+      GP=$GEN_WHILE_TRAINING
+      $PY -m cbot.genpool help --task runs/gen4_task.json --procs "$GP" >> "runs/gen_m$((r + 1))s.log" 2>&1 &
+      helper=$!
+      trap 'kill -TERM "$helper" 2>/dev/null || true' EXIT
+    fi
+    TP=$(( P - GP ))
+    log "round $r: training M$r on ${dirs[*]} ($(hostname -s), $TP procs + $GP generating, ${mem_gb} GB)"
     if [ "$mem_gb" -ge 160 ]; then
-      T=$(( P / 6 ))
+      T=$(( TP / 6 ))
       STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1 &
+      ta=$!
       sleep 30
       STAGGER=60 cbot/train_ens.sh "M${r}b" 3 0.3 "$T" "${dirs[@]}" > "runs/train_M${r}b.log" 2>&1 &
-      wait
+      wait "$ta" $!
     else
-      T=$(( P / 3 ))
+      T=$(( TP / 3 ))
       STAGGER=60 cbot/train_ens.sh "M${r}a" 3 0.5 "$T" "${dirs[@]}" > "runs/train_M${r}a.log" 2>&1
       STAGGER=60 cbot/train_ens.sh "M${r}b" 3 0.3 "$T" "${dirs[@]}" > "runs/train_M${r}b.log" 2>&1
+    fi
+    if [ "$GP" -gt 0 ]; then  # free the cores for the eval
+      kill -TERM "$helper" 2>/dev/null || true
+      wait "$helper" || true
+      trap - EXIT
     fi
     echo "$(cat "models/M${r}a.txt")+$(cat "models/M${r}b.txt")" > "models/M$r.txt"
     log "round $r: val losses $(grep -h 'best val' runs/train_M${r}a_s*.log runs/train_M${r}b_s*.log | awk '{print $3}' | tr '\n' ' ')"

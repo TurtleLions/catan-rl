@@ -3,12 +3,15 @@
     python -m cbot.genpool coordinate --task runs/gen4_task.json --procs 64 \\
         --out data/m3s --games 30000 --seed0 ... --mix ...   # same args as cbot.gen
     python -m cbot.genpool post --task runs/gen4_task.json --out ... (same args)
+    python -m cbot.genpool help --task runs/gen4_task.json --procs 64
 
 coordinate (run by the loop's leader, cbot/loop4.sh) writes the task file,
 works on it until every chunk is written, and then marks the output DONE. The
 other jobs (cbot/node.py) call work() on the same task. post only writes the
 task file, so the other jobs can start on it while the leader is busy (the
-loop posts the next round while it trains). Rewriting a task with another
+loop posts the next round while it trains). help plays chunks of the task in
+the task file until none is left, or until SIGTERM, which gives its open chunks
+back at once (the loop runs it on the leader's spare cores while it trains). Rewriting a task with another
 generator keeps the chunks already written: the seeds and table layout stay
 the same, only the bot in the BEST seats changes.
 
@@ -31,6 +34,7 @@ import argparse
 import json
 import multiprocessing as mp
 import queue
+import signal
 import socket
 import time
 from collections import deque
@@ -216,9 +220,51 @@ def read_task(path):
         return None
 
 
+def release_claims(out):
+    """Remove this process's claims in out, so other jobs take those chunks now
+    instead of after STALE seconds."""
+    claims = os.path.join(out, "claims")
+    try:
+        names = os.listdir(claims)
+    except FileNotFoundError:
+        return
+    for n in names:
+        p = os.path.join(claims, n)
+        try:
+            with open(p) as f:
+                if f.read().startswith(ME + " "):
+                    os.remove(p)
+        except (FileNotFoundError, IsADirectoryError):
+            pass
+
+
+def help_task(task_path, procs):
+    def on_term(signum, frame):
+        raise SystemExit(143)
+
+    signal.signal(signal.SIGTERM, on_term)
+    pool, task = new_pool(procs), None
+    try:
+        while True:
+            task = read_task(task_path)
+            if task is None or os.path.exists(os.path.join(task["out"], "DONE")) or all_done(task):
+                break
+            try:
+                if work(task, pool, procs, task_path) == 0:
+                    time.sleep(30)  # remaining chunks are claimed by other jobs
+            except PoolStuck:
+                pool.terminate()
+                pool = new_pool(procs)
+    finally:
+        pool.terminate()
+        if task is not None:
+            release_claims(task["out"])
+            log(f"help: stopped; open chunks of {task['out']} released")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["coordinate", "post"])
+    ap.add_argument("mode", choices=["coordinate", "post", "help"])
     ap.add_argument("--task", required=True)
     ap.add_argument("--procs", type=int, default=os.cpu_count())
     # Same meaning as in cbot.gen:
@@ -230,6 +276,9 @@ def main():
     ap.add_argument("--seed0", type=int)
     ap.add_argument("--chunk", type=int, default=200)
     args = ap.parse_args()
+    if args.mode == "help":
+        help_task(args.task, args.procs)
+        return
 
     task = {k: getattr(args, k) for k in ("out", "games", "mix", "eps", "p_record", "seed0", "chunk")}
     os.makedirs(args.out, exist_ok=True)
