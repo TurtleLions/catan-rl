@@ -43,11 +43,15 @@ next_round() {
   echo $(( ${last:-0} + 1 ))
 }
 
-# Win rate of the first spec from an arena run; appends to runs/loop4.jsonl.
+# Win rate of the first spec from an arena run, read from this run's own result
+# file; fails (stopping the loop) if the arena did not finish. Appends the result
+# to runs/loop4.jsonl.
 arena_rate() {
   local seed0=$1 games=$2 logf=$3; shift 3
-  $PY -m cbot.arena "$@" --games "$games" --procs "$P" --seed0 "$seed0" --log runs/loop4.jsonl > "$logf" 2>&1
-  $PY -c 'import json; print(json.loads(open("runs/loop4.jsonl").readlines()[-1])["a_winrate"])'
+  rm -f "$logf.json"
+  $PY -m cbot.arena "$@" --games "$games" --procs "$P" --seed0 "$seed0" --log "$logf.json" > "$logf" 2>&1 || return 1
+  cat "$logf.json" >> runs/loop4.jsonl
+  $PY -c 'import json, sys; print(json.loads(open(sys.argv[1]).read())["a_winrate"])' "$logf.json"
 }
 
 while :; do
@@ -119,7 +123,7 @@ while :; do
   #    if H2H_GAMES > 0, vs three copies of the current best (25% = equal).
   cand=$(cat "models/M$r.txt")
   if [ ! -f "runs/eval_M$r.rate" ]; then
-    rate=$(arena_rate "$EVAL_SEED0" "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2" AB AB AB)
+    rate=$(arena_rate "$EVAL_SEED0" "$EVAL_GAMES" "runs/eval_M$r.log" "NN:$cand:initf=2" AB AB AB) || exit 1
     echo "$rate" > "runs/eval_M$r.rate"
     log "round $r: M$r vs 3AB = $rate (best so far $best_rate) | $(tail -n 1 "runs/eval_M$r.log")"
   fi
@@ -128,7 +132,7 @@ while :; do
   if [ "$H2H_GAMES" -gt 0 ]; then
     if [ ! -f "runs/h2h_M$r.rate" ]; then
       bb="NN:$best:initf=2"
-      h=$(arena_rate 30000000 "$H2H_GAMES" "runs/h2h_M$r.log" "NN:$cand:initf=2" "$bb" "$bb" "$bb")
+      h=$(arena_rate 30000000 "$H2H_GAMES" "runs/h2h_M$r.log" "NN:$cand:initf=2" "$bb" "$bb" "$bb") || exit 1
       echo "$h" > "runs/h2h_M$r.rate"
       log "round $r: M$r vs 3x best ($best) = $h | $(tail -n 1 "runs/h2h_M$r.log")"
     fi
