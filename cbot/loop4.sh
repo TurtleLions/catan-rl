@@ -132,6 +132,9 @@ while :; do
   if [ "$GATE" = h2h ] && [ -n "$h2h" ]; then
     ok=$($PY -c "print(int($h2h >= $H2H_MIN))")
     why="h2h $h2h vs min $H2H_MIN"
+  elif [ "$GATE" = both ] && [ -n "$h2h" ]; then
+    ok=$($PY -c "print(int($h2h >= $H2H_MIN and $rate >= $best_rate - 0.03))")
+    why="h2h $h2h vs min $H2H_MIN, vs 3AB $rate vs best $best_rate - 0.03"
   else
     ok=$($PY -c "print(int($rate >= $best_rate - 0.03))")
     why="vs 3AB $rate vs best $best_rate - 0.03"
