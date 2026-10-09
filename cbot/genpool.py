@@ -92,10 +92,11 @@ def write_chunk(out, k, parts):
     os.replace(p + ".tmp.npz", p)
 
 
-def work(task, pool, procs, task_path=None):
-    """Play claimable chunks of the task until none is left to claim, or until
-    the task file (task_path) no longer holds this task; returns the number of
-    chunks this process wrote."""
+def work(task, pool, procs, task_path=None, stop=None):
+    """Play claimable chunks of the task until none is left to claim, until the
+    task file (task_path) no longer holds this task, or until stop() is true;
+    returns the number of chunks this process wrote. Chunks already claimed are
+    always finished."""
     out, C = task["out"], task["chunk"]
     claims = os.path.join(out, "claims")
     os.makedirs(claims, exist_ok=True)
@@ -114,6 +115,10 @@ def work(task, pool, procs, task_path=None):
         if scan < nchunk and task_path and read_task(task_path) != task:
             log("task rewritten; finishing open chunks")
             scan = nchunk  # claim nothing more (e.g. new generator for the rest of the round)
+            return None
+        if scan < nchunk and stop is not None and stop():
+            log("stopping; finishing open chunks")
+            scan = nchunk
             return None
         while scan < nchunk:
             k = scan

@@ -5,10 +5,11 @@
 At most one job leads at a time: the one holding the lease runs/loop4.leader
 (created exclusively). The leader runs cbot/loop4.sh (generation, training,
 evals, gate) and refreshes the lease every minute. Every other job plays
-generation chunks of the current round (cbot.genpool) and checks the lease
-between chunks; when the lease is released (the leader was preempted or the
-loop finished) or not refreshed for LEASE_STALE seconds (its node died), it
-takes over and runs loop4.sh, which continues the round from the shared files.
+generation chunks (cbot.genpool) and checks the lease before each chunk claim;
+when the lease is released (the leader was preempted or the loop finished) or
+not refreshed for LEASE_STALE seconds (its node died), it finishes its open
+chunks, takes over and runs loop4.sh, which continues the round from the
+shared files.
 
 A leader that finds its lease gone (taken over during a filesystem stall) stops
 its loop and goes back to helping. A job exits when the loop is finished or
@@ -54,6 +55,14 @@ def try_lease():
         except FileNotFoundError:
             pass
     return False
+
+
+def lease_free():
+    """True if the lease is released or stale, i.e. the loop needs a leader."""
+    try:
+        return time.time() - os.stat(LEASE).st_mtime >= LEASE_STALE
+    except FileNotFoundError:
+        return True
 
 
 def own_lease():
@@ -131,7 +140,9 @@ def main():
         if task and not os.path.exists(os.path.join(task["out"], "DONE")):
             if pool is None:
                 pool = mp.Pool(args.procs)
-            if genpool.work(task, pool, args.procs, TASK):
+            # Stop claiming chunks as soon as the loop needs a leader, so a
+            # leader lost mid-training is replaced within a chunk, not a round.
+            if genpool.work(task, pool, args.procs, TASK, stop=lease_free):
                 idle_since = time.time()
                 continue
         time.sleep(30)
