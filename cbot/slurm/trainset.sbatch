@@ -7,7 +7,10 @@
 # nets and evals are kept. SEQ=1 trains three nets at a time even with 160+ GB
 # (each net holds the whole dataset, ~2x that while loading). STAGGER=<s> sets the
 # delay between nets' starts (default 60); with a lot of data, 1200 keeps their loads
-# from overlapping.
+# from overlapping. HIDDEN=512,256 trains wider nets (default 256,128). P=<n>
+# sets the cores to use (default all), e.g. to run two of these side by side
+# on a node without Slurm:
+#   SLURM_SUBMIT_DIR=$PWD P=64 setsid nohup bash cbot/slurm/trainset.sbatch NAME dirs... > runs/NAME.out 2>&1 &
 #SBATCH --job-name=catan4-train
 #SBATCH --account=scc
 #SBATCH --partition=long
@@ -20,7 +23,7 @@
 #SBATCH --requeue
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-P=$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)
+P=${P:-$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)}
 NAME=$1; shift
 export PLAYERS=4
 echo "== $(hostname) $(date) training $NAME on $*"
