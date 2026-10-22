@@ -36,14 +36,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Cbot(Player):
-    """Search with a learned value net (A20big ensemble: 70.0% vs three AlphaBetas, hidden cards guessed)."""
+    """Search with a learned value net (A20big ensemble: 70.0% vs three AlphaBetas at depth 2,
+    hidden cards guessed; depth 3 gained A20 about two points at five times the time)."""
 
     LABEL = "CBOT"
 
     @dataclasses.dataclass(frozen=True)
     class Params:
         model: str = "A20big"  # models/<model>.txt holds the NN spec
-        depth: int = 2
+        depth: int = 3  # about 250 ms a decision, a few seconds at most
         trade: int = 1  # offer trades to other players (answering is always on)
 
     def __init__(self, color, params=None):
@@ -53,8 +54,7 @@ class Cbot(Player):
         if not spec.startswith("NN:"):  # a bare list of nets, e.g. models/M0.txt
             spec = f"NN:{spec}:initf=2"
         spec = spec.replace("models/", os.path.join(ROOT, "models") + "/")
-        if self.params.depth != 2:
-            spec += f":depth={self.params.depth}"
+        spec += f":depth={self.params.depth}"
         spec += f":trade={self.params.trade}"
         self.bot = make_player(spec, color)
 
