@@ -1,0 +1,512 @@
+diff --git a/catanatron/catanatron/serialization.py b/catanatron/catanatron/serialization.py
+index 7cb5330..85f07fd 100644
+--- a/catanatron/catanatron/serialization.py
++++ b/catanatron/catanatron/serialization.py
+@@ -394,10 +394,14 @@ def client_view(doc, perspective=None):
+         state.pop(prefix + "ACTUAL_VICTORY_POINTS")
+     view["player_state"] = state
+ 
++    def sees_result(a):
++        # The robbed player knows which card they lost, as the robber does.
++        return a[0] == color or (a[1] == "MOVE_ROBBER" and a[2][1] == color)
++
+     view["action_records"] = [
+         (
+             [[a[0], a[1], None if a[1] in SECRET_VALUE else a[2]], None]
+-            if a[0] != color and a[1] in SECRET_RESULT
++            if a[1] in SECRET_RESULT and not sees_result(a)
+             else [a, result]
+         )
+         for a, result in doc["action_records"]
+diff --git a/tests/test_serialization.py b/tests/test_serialization.py
+index 89020ee..3b35276 100644
+--- a/tests/test_serialization.py
++++ b/tests/test_serialization.py
+@@ -352,7 +352,10 @@ def test_what_the_robber_stole_is_hidden_but_where_it_went_is_not():
+         coordinate, victim = action[2]
+         assert isinstance(coordinate, list), "the tile is public"
+         assert victim is None or isinstance(victim, str), "who was robbed is public"
+-        assert result is None, "which resource is not"
++        if victim == Color.RED.value:
++            assert result is not None, "I know which card I lost"
++        else:
++            assert result is None, "which resource is not"
+ 
+ 
+ def test_a_spectator_still_sees_everything():
+diff --git a/ui/src/components/LeftDrawer.scss b/ui/src/components/LeftDrawer.scss
+index b841217..1862515 100644
+--- a/ui/src/components/LeftDrawer.scss
++++ b/ui/src/components/LeftDrawer.scss
+@@ -5,7 +5,7 @@ $dark-divider: rgb(0 0 0 / 80%);
+ .left-drawer {
+   .MuiDrawer-paper {
+     width: 280px;
+-    background: variables.$dark-gray;
++    background: variables.$navy;
+   }
+ 
+   .MuiDivider-root {
+@@ -24,9 +24,16 @@ $dark-divider: rgb(0 0 0 / 80%);
+     display: flex;
+     flex-direction: column-reverse;
+     scrollbar-width: thin;
+-    scrollbar-color: #454545 variables.$dark-gray;
++    scrollbar-color: #5b84b1 variables.$navy;
+     .action {
+       padding: variables.$sm-gutter;
+     }
+   }
+ }
++
++.perspective-toggle {
++  padding: 6px variables.$sm-gutter;
++  color: #cfe2ff;
++  font-size: 0.8rem;
++  text-transform: uppercase;
++}
+diff --git a/ui/src/components/LeftDrawer.tsx b/ui/src/components/LeftDrawer.tsx
+index 2c39fb8..b269e9f 100644
+--- a/ui/src/components/LeftDrawer.tsx
++++ b/ui/src/components/LeftDrawer.tsx
+@@ -4,7 +4,6 @@ import SwipeableDrawer from "@mui/material/SwipeableDrawer";
+ import Divider from "@mui/material/Divider";
+ import Drawer from "@mui/material/Drawer";
+ 
+-import Button from "@mui/material/Button";
+ 
+ import Hidden from "./Hidden";
+ import PlayerStateBox from "./PlayerStateBox";
+@@ -18,31 +17,12 @@ import { isTabOrShift, type InteractionEvent } from "../utils/events";
+ import "./LeftDrawer.scss";
+ 
+ function PerspectiveToggle({ gameState }: { gameState: GameState }) {
+-  const { state, dispatch } = useContext(store);
+   const humanColor = getHumanColor(gameState);
+   if (!humanColor) {
+     return null; // Bots only: there is no seat to sit in.
+   }
+-  const seated = state.perspective !== null;
+-  return (
+-    <Button
+-      className="perspective-toggle"
+-      size="small"
+-      onClick={() =>
+-        dispatch({
+-          type: ACTIONS.SET_PERSPECTIVE,
+-          data: seated ? null : humanColor,
+-        })
+-      }
+-      title={
+-        seated
+-          ? "Showing only what your seat can see"
+-          : "Showing every hand, as a spectator"
+-      }
+-    >
+-      {seated ? `Playing as ${humanColor}` : "Spectating"}
+-    </Button>
+-  );
++  // Always seated: the other hands are never shown face up.
++  return <div className="perspective-toggle">Playing as {humanColor}</div>;
+ }
+ 
+ function DrawerContent({ gameState }: { gameState: GameState }) {
+diff --git a/ui/src/components/RightDrawer.scss b/ui/src/components/RightDrawer.scss
+index 6c577d9..91d4268 100644
+--- a/ui/src/components/RightDrawer.scss
++++ b/ui/src/components/RightDrawer.scss
+@@ -13,7 +13,7 @@ $dark-divider: rgb(0 0 0 / 80%);
+ 
+   .MuiDrawer-paper {
+     width: 280px;
+-    background: variables.$dark-gray;
++    background: variables.$navy;
+     color: white;
+   }
+ 
+diff --git a/ui/src/pages/Board.scss b/ui/src/pages/Board.scss
+index 8854142..9ab1adb 100644
+--- a/ui/src/pages/Board.scss
++++ b/ui/src/pages/Board.scss
+@@ -50,8 +50,8 @@
+ }
+ 
+ .MuiPaper-elevation3.number-token {
+-  background: variables.$dark-gray;
+-  color: white;
++  background: #f5ecd7;
++  color: #1a1a1a;
+ }
+ 
+ .MuiPaper-elevation3.robber {
+@@ -173,3 +173,21 @@
+   width: 75%;
+   height: 75%;
+ }
++
++.port {
++  color: #1a1a1a;
++  text-shadow: 0 0 3px #fff, 0 0 3px #fff;
++}
++
++// Blue text on the navy panels needs a lighter blue to be readable.
++.BLUE.foreground {
++  color: #8fc1ff;
++}
++
++// ===== Choosing whom to rob
++.rob-choices {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  min-width: 220px;
++}
+diff --git a/ui/src/pages/GameScreen.scss b/ui/src/pages/GameScreen.scss
+index 914e2f1..31edbb6 100644
+--- a/ui/src/pages/GameScreen.scss
++++ b/ui/src/pages/GameScreen.scss
+@@ -1,7 +1,7 @@
+ @use "../variables.scss";
+ 
+ .MuiToolbar-root {
+-  background: variables.$black;
++  background: variables.$navy;
+ }
+ 
+ h6.MuiTypography-h6 {
+@@ -48,7 +48,7 @@ main {
+     text-align: center;
+   }
+ 
+-  background: variables.$black;
++  background: variables.$ocean;
+   color: white;
+   height: 100%;
+   display: flex;
+diff --git a/ui/src/pages/GameScreen.tsx b/ui/src/pages/GameScreen.tsx
+index b199e83..6873834 100644
+--- a/ui/src/pages/GameScreen.tsx
++++ b/ui/src/pages/GameScreen.tsx
+@@ -9,7 +9,6 @@ import ActionsToolbar from "./ActionsToolbar";
+ 
+ import "./GameScreen.scss";
+ import LeftDrawer from "../components/LeftDrawer";
+-import RightDrawer from "../components/RightDrawer";
+ import { store } from "../store";
+ import ACTIONS from "../actions";
+ import {
+@@ -20,8 +19,6 @@ import {
+ } from "../utils/apiClient";
+ import { dispatchSnackbar } from "../components/Snackbar";
+ import { getHumanColor } from "../utils/stateUtils";
+-import AnalysisBox from "../components/AnalysisBox";
+-import { Divider } from "@mui/material";
+ 
+ const ROBOT_THINKING_TIME = 300;
+ 
+@@ -41,10 +38,24 @@ function GameScreen({ replayMode }: { replayMode: boolean }) {
+     // refetch whenever it changes.
+     setPerspective(state.perspective);
+     (async () => {
+-      const gameState = await getState(gameId, stateIndex as StateIndex);
++      let gameState;
++      try {
++        gameState = await getState(gameId, stateIndex as StateIndex);
++      } catch {
++        // The perspective is a seat of an earlier game: look again unseated.
++        dispatch({ type: ACTIONS.SET_PERSPECTIVE, data: null });
++        return;
++      }
++      // A game with a human is always seen from the human's seat, so the
++      // other hands are never face up (this refetches as that seat).
++      const humanColor = getHumanColor(gameState);
++      if (!replayMode && humanColor && state.perspective !== humanColor) {
++        dispatch({ type: ACTIONS.SET_PERSPECTIVE, data: humanColor });
++        return;
++      }
+       dispatch({ type: ACTIONS.SET_GAME_STATE, data: gameState });
+     })();
+-  }, [gameId, stateIndex, state.perspective, dispatch]);
++  }, [gameId, stateIndex, state.perspective, replayMode, dispatch]);
+ 
+   // Maybe kick off next query?
+   useEffect(() => {
+@@ -98,10 +109,8 @@ function GameScreen({ replayMode }: { replayMode: boolean }) {
+       <ZoomableBoard replayMode={replayMode} />
+       <ActionsToolbar isBotThinking={isBotThinking} replayMode={replayMode} />
+       <LeftDrawer />
+-      <RightDrawer>
+-        <AnalysisBox stateIndex={"latest"}/>
+-        <Divider />
+-      </RightDrawer>
++      {/* No win-probability analysis: it searches the full state, every hand
++          face up. */}
+     </main>
+   );
+ }
+diff --git a/ui/src/pages/HomePage.scss b/ui/src/pages/HomePage.scss
+index be18626..7669cc2 100644
+--- a/ui/src/pages/HomePage.scss
++++ b/ui/src/pages/HomePage.scss
+@@ -10,7 +10,7 @@
+   padding: 24px 16px 0;
+   background:
+     radial-gradient(circle at top, rgb(34 120 255 / 18%), transparent 35%),
+-    linear-gradient(180deg, #070a0c 0%, #111614 100%);
++    linear-gradient(180deg, #2f78c4 0%, #1d5a9a 100%);
+ }
+ 
+ .home-page__inner {
+@@ -30,7 +30,7 @@
+   padding: 18px 20px 28px;
+   border: 1px solid rgb(255 255 255 / 8%);
+   border-radius: 24px;
+-  background: rgb(21 19 19 / 92%);
++  background: rgb(23 64 107 / 94%);
+   box-shadow: 0 20px 60px rgb(0 0 0 / 28%);
+ }
+ 
+@@ -153,12 +153,12 @@
+ .home-page .MuiButton-root.choice-button,
+ .home-page .MuiButton-root.add-player-btn {
+   color: white;
+-  background-color: variables.$dark-gray;
++  background-color: #2a5d91;
+ }
+ 
+ .home-page .MuiButton-root.choice-button:hover,
+ .home-page .MuiButton-root.add-player-btn:hover {
+-  background-color: color.adjust(variables.$dark-gray, $lightness: -8%);
++  background-color: color.adjust(#2a5d91, $lightness: -8%);
+ }
+ 
+ .home-page .MuiButton-root.choice-button.selected {
+diff --git a/ui/src/pages/HomePage.tsx b/ui/src/pages/HomePage.tsx
+index 7e3bd1b..8e0819f 100644
+--- a/ui/src/pages/HomePage.tsx
++++ b/ui/src/pages/HomePage.tsx
+@@ -28,10 +28,10 @@ const PLAYER_COLORS = ["RED", "BLUE", "ORANGE", "WHITE"] as const;
+ export default function HomePage() {
+   const [loading, setLoading] = useState(false);
+   const [mapTemplate, setMapTemplate] = useState<MapTemplate>("BASE");
+-  const [vpsToWin, setVpsToWin] = useState(15);
+-  const [discardLimit, setDiscardLimit] = useState(9);
+-  const [friendlyRobber, setFriendlyRobber] = useState(true);
+-  const [players, setPlayers] = useState<PlayerKey[]>(["HUMAN", "CATANATRON"]);
++  const [vpsToWin, setVpsToWin] = useState(10);
++  const [discardLimit, setDiscardLimit] = useState(7);
++  const [friendlyRobber, setFriendlyRobber] = useState(false);
++  const [players, setPlayers] = useState<PlayerKey[]>(["HUMAN", "CBOT", "CBOT", "CBOT"]);
+   const [available, setAvailable] = useState<PlayerEntry[]>([]);
+   const navigate = useNavigate();
+ 
+diff --git a/ui/src/pages/ReplayScreen.scss b/ui/src/pages/ReplayScreen.scss
+index 017445a..8883927 100644
+--- a/ui/src/pages/ReplayScreen.scss
++++ b/ui/src/pages/ReplayScreen.scss
+@@ -1,7 +1,7 @@
+ @use "../variables.scss";
+ 
+ main {
+-  background: variables.$black;
++  background: variables.$ocean;
+   color: white;
+   height: 100%;
+   display: flex;
+diff --git a/ui/src/pages/Tile.scss b/ui/src/pages/Tile.scss
+index 7c0f36d..c5a0c6a 100644
+--- a/ui/src/pages/Tile.scss
++++ b/ui/src/pages/Tile.scss
+@@ -16,7 +16,7 @@
+   }
+ 
+   &.number-token-red {
+-    color: #ff5555;
++    color: #c62828;
+   }
+ 
+   &.flashing {
+diff --git a/ui/src/pages/ZoomableBoard.tsx b/ui/src/pages/ZoomableBoard.tsx
+index d018ef7..5cbdeba 100644
+--- a/ui/src/pages/ZoomableBoard.tsx
++++ b/ui/src/pages/ZoomableBoard.tsx
+@@ -7,13 +7,14 @@ import useWindowSize from "../utils/useWindowSize";
+ 
+ import "./Board.scss";
+ import { store } from "../store";
+-import { isPlayersTurn } from "../utils/stateUtils";
++import { isPlayersTurn, playerKey } from "../utils/stateUtils";
++import { Button, Dialog, DialogContent, DialogTitle } from "@mui/material";
+ import { postAction } from "../utils/apiClient";
+ import type { CatanState } from "../store";
+ import { useParams } from "react-router-dom";
+ import ACTIONS from "../actions";
+ import Board from "./Board";
+-import type { GameAction, TileCoordinate } from "../utils/api.types";
++import type { Color, GameAction, MoveRobberAction, TileCoordinate } from "../utils/api.types";
+ 
+ /**
+  * Returns object representing actions to be taken if click on node.
+@@ -83,6 +84,14 @@ function buildEdgeActions(state: CatanState) {
+   return edgeActions;
+ }
+ 
++// The player colors of Board.scss, with readable text on each.
++const ROB_BUTTON_STYLE: Record<string, React.CSSProperties> = {
++  RED: { background: "#fe0400", color: "white" },
++  BLUE: { background: "#2278ff", color: "white" },
++  ORANGE: { background: "#ffa500", color: "#1a1a1a" },
++  WHITE: { background: "white", color: "#1a1a1a" },
++};
++
+ type ZoomableBoardProps = {
+   replayMode: boolean;
+ }
+@@ -122,27 +131,37 @@ export default function ZoomableBoard({ replayMode }: ZoomableBoardProps) {
+     }),
+     []
+   );
++  // Robbing is two choices: the tile, then (when more than one player
++  // borders it) whom to rob.
++  const [robChoices, setRobChoices] = useState<MoveRobberAction[]>([]);
++  const playRobberAction = (action: GameAction) => {
++    setRobChoices([]);
++    postAction(gameId, action).then((gameState) => {
++      dispatch({ type: ACTIONS.SET_GAME_STATE, data: gameState });
++    });
++  };
+   const handleTileClick = useCallback(
+-    memoize((coordinate: TileCoordinate) => {
+-      console.log("Clicked Tile ", coordinate);
+-      if (state.isMovingRobber) {
+-        // Find the "MOVE_ROBBER" action in current_playable_actions that
+-        // corresponds to the tile coordinate selected by the user
+-        const matchingAction = gameState.current_playable_actions.find(
+-          (action) =>
+-            action[1] === "MOVE_ROBBER" &&
+-            action[2][0].every(
+-              (val: number, index: number) => val === coordinate[index],
+-            ),
+-        );
+-        if (matchingAction) {
+-          postAction(gameId, matchingAction).then((gameState) => {
+-            dispatch({ type: ACTIONS.SET_GAME_STATE, data: gameState });
+-          });
+-        }
++    (coordinate: TileCoordinate) => {
++      if (!state.isMovingRobber) {
++        return;
+       }
+-    }),
+-    [state.isMovingRobber]
++      // One MOVE_ROBBER action per player that can be robbed on this tile
++      // (or a single one with nobody to rob).
++      const matching = gameState.current_playable_actions.filter(
++        (action) =>
++          action[1] === "MOVE_ROBBER" &&
++          action[2][0].every(
++            (val: number, index: number) => val === coordinate[index],
++          ),
++      );
++      if (matching.length === 1) {
++        playRobberAction(matching[0]);
++      } else if (matching.length > 1) {
++        setRobChoices(matching as MoveRobberAction[]);
++      }
++    },
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++    [state.isMovingRobber, gameState]
+   );
+ 
+   const nodeActions = replayMode ? {} : buildNodeActions(state);
+@@ -184,6 +203,29 @@ export default function ZoomableBoard({ replayMode }: ZoomableBoardProps) {
+           />
+         </TransformComponent>
+       </div>
++      <Dialog open={robChoices.length > 0} onClose={() => setRobChoices([])}>
++        <DialogTitle>Who do you rob?</DialogTitle>
++        <DialogContent className="rob-choices">
++          {robChoices.map((action) => {
++            const victim = action[2][1] as Color;
++            const cards =
++              gameState.player_state[
++                `${playerKey(gameState, victim)}_NUM_RESOURCES_IN_HAND`
++              ] ?? 0;
++            return (
++              <Button
++                key={victim}
++                variant="contained"
++                className="rob-choice"
++                style={ROB_BUTTON_STYLE[victim]}
++                onClick={() => playRobberAction(action)}
++              >
++                {victim} ({cards} {cards === 1 ? "card" : "cards"})
++              </Button>
++            );
++          })}
++        </DialogContent>
++      </Dialog>
+     </TransformWrapper>
+   );
+ }
+diff --git a/ui/src/utils/promptUtils.test.ts b/ui/src/utils/promptUtils.test.ts
+index 52ad87d..08d618c 100644
+--- a/ui/src/utils/promptUtils.test.ts
++++ b/ui/src/utils/promptUtils.test.ts
+@@ -267,7 +267,7 @@ describe("humanizeAction", () => {
+       "BRICK",
+     ];
+     expect(humanizeActionRecord(baseGameState, actionRecord)).toBe(
+-      "BOT ROBBED 6 BRICK (STOLE BRICK)"
++      "BOT ROBBED BLUE AT 6 BRICK (STOLE BRICK)"
+     );
+   });
+ 
+@@ -277,7 +277,7 @@ describe("humanizeAction", () => {
+       null,
+     ];
+     expect(humanizeActionRecord(baseGameState, actionRecord)).toBe(
+-      "BOT ROBBED 6 BRICK"
++      "BOT MOVED THE ROBBER TO 6 BRICK"
+     );
+   });
+ 
+diff --git a/ui/src/utils/promptUtils.ts b/ui/src/utils/promptUtils.ts
+index bb7bbd5..c0ccb72 100644
+--- a/ui/src/utils/promptUtils.ts
++++ b/ui/src/utils/promptUtils.ts
+@@ -8,6 +8,7 @@ import type {
+   PlayYearOfPlentyAction,
+   MoveRobberAction,
+   ResourceCard,
++  Color,
+ } from "./api.types";
+ import type { GameState } from "./api.types";
+ 
+@@ -76,9 +77,14 @@ export function humanizeActionRecord(
+       const action = actionRecord[0] as MoveRobberAction;
+       const tile = findTileByCoordinate(gameState, action[2][0]);
+       const tileString = getTileString(tile);
++      const victim = action[2][1];
+       const robbedResource = actionRecord[1];
+       const stolenResource = robbedResource ? ` (STOLE ${robbedResource})` : "";
+-      return `${player} ROBBED ${tileString}${stolenResource}`;
++      if (!victim) {
++        return `${player} MOVED THE ROBBER TO ${tileString}`;
++      }
++      const victimName = botColors.includes(victim as Color) ? victim : "YOU";
++      return `${player} ROBBED ${victimName} AT ${tileString}${stolenResource}`;
+     }
+     case "MARITIME_TRADE": {
+       const label = humanizeTradeAction(action as MaritimeTradeAction);
+diff --git a/ui/src/variables.scss b/ui/src/variables.scss
+index e4eeaff..d49666b 100644
+--- a/ui/src/variables.scss
++++ b/ui/src/variables.scss
+@@ -19,3 +19,6 @@ $wheat: #fac60c;
+ $sheep: #87ff65;
+ $darker-sheep: #72cf57;
+ $ore: #616166;
++
++$ocean: #2f78c4;
++$navy: #17406b;
