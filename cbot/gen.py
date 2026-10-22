@@ -9,6 +9,11 @@ that player. Multiplayer shards hold y = the winner's seat relative to that
 player (0 = itself) and V = the search's per-seat win probabilities, also
 relative. Optional epsilon-random moves add diversity.
 
+Policy targets: where a search bot moved at a recorded state, the shard also
+holds the search's value of every legal move (for the mover) as triples
+(pr = row of the mover's own features, pa = move number in cbot.policy,
+pv = value).
+
 Resumable: rerunning with the same arguments skips games whose seeds are
 already in the output's shards (shards are written atomically).
 """
@@ -49,6 +54,7 @@ def play_record(args):
     colors = game.state.colors  # seat order
     n = len(colors)
     rows, who, sv = [], [], []
+    pr, pa, pv = [], [], []
 
     def decide(player, g, actions):
         rec = rng.random() < p_record
@@ -59,7 +65,19 @@ def play_record(args):
                 sv.append(np.full(n, np.nan))
         if len(actions) > 1 and rng.random() < eps:
             return rng.choice(actions)
+        mover = g.state.current_color()
         act = player.decide(g, actions)
+        scores = getattr(player, "last_scores", None)
+        if rec and scores:
+            from cbot import policy
+
+            row = len(rows) - n + colors.index(mover)
+            for a, v in scores:
+                i = policy.index(a)
+                if i >= 0:
+                    pr.append(row)
+                    pa.append(i)
+                    pv.append(v)
         vec = getattr(player, "last_vec", None)
         if rec and vec is not None:
             # Per-seat search values, rotated so each row is relative to its player.
@@ -78,7 +96,8 @@ def play_record(args):
         y, V = (who == w).astype(np.int8), V[:, 0]
     else:
         y = ((w - who) % n).astype(np.int8)
-    return X, y, V, np.full(len(y), seed, dtype=np.int64)
+    P = (np.array(pr, dtype=np.int32), np.array(pa, dtype=np.int16), np.array(pv, dtype=np.float32))
+    return X, y, V, np.full(len(y), seed, dtype=np.int64), P
 
 
 def make_jobs(games, seed0, mix, eps, p_record):
@@ -132,23 +151,28 @@ def main():
     if seen:
         print(f"resuming: {len(have)} shards, {len(seen)} games recorded, {len(jobs)} to play", flush=True)
 
-    Xs, ys, vs, gs, shard, done = [], [], [], [], 1 + max((int(f[5:8]) for f in have), default=-1), args.games - len(jobs)
+    Xs, ys, vs, gs, ps, shard, done = [], [], [], [], [], 1 + max((int(f[5:8]) for f in have), default=-1), args.games - len(jobs)
     t0 = time.time()
 
     def flush():
-        nonlocal Xs, ys, vs, gs, shard
+        nonlocal Xs, ys, vs, gs, ps, shard
         if Xs:
             path = os.path.join(args.out, f"shard{shard:03d}.npz")
+            # Policy rows are per game; offset them to rows of the shard.
+            offs = np.cumsum([0] + [len(x) for x in Xs[:-1]])
             np.savez(
                 path + ".tmp.npz",
                 X=np.concatenate(Xs),
                 y=np.concatenate(ys),
                 v=np.concatenate(vs),
                 g=np.concatenate(gs),
+                pr=np.concatenate([p[0] + o for p, o in zip(ps, offs)]),
+                pa=np.concatenate([p[1] for p in ps]),
+                pv=np.concatenate([p[2] for p in ps]),
             )
             os.replace(path + ".tmp.npz", path)
             shard += 1
-            Xs, ys, vs, gs = [], [], [], []
+            Xs, ys, vs, gs, ps = [], [], [], [], []
 
     with mp.Pool(args.procs) as pool:
         for r in pool.imap_unordered(play_record, jobs, chunksize=4):
@@ -158,6 +182,7 @@ def main():
                 ys.append(r[1])
                 vs.append(r[2])
                 gs.append(r[3])
+                ps.append(r[4])
             if len(Xs) >= args.shard_games or done == args.games:
                 flush()
                 print(f"{done}/{args.games} games, {time.time() - t0:.0f}s", flush=True)

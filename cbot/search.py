@@ -44,9 +44,7 @@ class ValueNet:
         b0n = b0 - (self.mean / self.std) @ W0
         self.layers[0] = (W0n.astype(np.float32), b0n.astype(np.float32))
 
-    def __call__(self, X):
-        """1v1 nets: P(P0 wins), shape (n,). Multiplayer nets: softmax over
-        seats relative to P0, shape (n, players)."""
+    def logits(self, X):
         h = X if self.cols is None else X[:, self.cols]
         if self.derived:
             h = np.concatenate([h, feats.derive(X)], axis=1)
@@ -54,6 +52,12 @@ class ValueNet:
             h = h @ W + b
             if i < len(self.layers) - 1:
                 np.maximum(h, 0, out=h)
+        return h
+
+    def __call__(self, X):
+        """1v1 nets: P(P0 wins), shape (n,). Multiplayer nets: softmax over
+        seats relative to P0, shape (n, players)."""
+        h = self.logits(X)
         if h.shape[1] > 1:
             h = np.exp(h - h.max(1, keepdims=True))
             return h / h.sum(1, keepdims=True)
@@ -87,7 +91,7 @@ class NNSearchPlayer(Player):
     def __init__(
         self, color, model_path, depth=2, prune=1, maxleaves=4000,
         place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0, fair=1,
-        trade=0, offerk=3,
+        trade=0, offerk=3, policy=None, pk=4,
     ):
         super().__init__(color)
         self.net = get_net(model_path)
@@ -123,14 +127,31 @@ class NNSearchPlayer(Player):
         # promising offers by the net alone are searched in full.
         self.trade = int(trade)
         self.offerk = int(offerk)
+        # Policy pruning: below the root, search only the `pk` moves the
+        # policy net (cbot.policy) rates highest, instead of Catanatron's
+        # pruned list, so the same time buys more depth.
+        if policy is not None:
+            from cbot import policy as policy_mod
+
+            self.policy_mod = policy_mod
+            self.policy = policy_mod.get_policy(policy)
+        else:
+            self.policy = None
+        self.pk = int(pk)
+        # last_scores: (action, value for this seat) of every root move of the
+        # last full search, for training a policy (cbot.gen); else None.
+        self.last_scores = None
 
     def _actions(self, game, root):
+        if self.policy is not None and not root:
+            return self.policy_mod.top(self.policy, game, game.playable_actions, self.pk)
         if self.prune and not root:
             return list_prunned_actions(game)
         return game.playable_actions
 
     def decide(self, game, playable_actions):
         self.last_value = None
+        self.last_scores = None
         if len(playable_actions) == 1 and not (self.trade and trade.offers(game, self.color)):
             return playable_actions[0]
         if self.fair:
@@ -165,6 +186,7 @@ class NNSearchPlayer(Player):
         self.last_vec = scored[0][0]
         self.last_value = float(self.last_vec[me])
         scored = [(v[me], a) for v, a in scored]
+        self.last_scores = [(a, float(v)) for v, a in scored]
         if (
             self.place
             and game.state.current_prompt == ActionPrompt.BUILD_INITIAL_SETTLEMENT
