@@ -22,7 +22,7 @@ from cbot import fast  # noqa: F401  (patch Catanatron before taking references)
 from catanatron.players.value import ValueFunctionPlayer, base_fn
 from catanatron.players.tree_search_utils import list_prunned_actions
 
-from cbot import chance, feats
+from cbot import belief, chance, feats
 
 
 class ValueNet:
@@ -86,7 +86,7 @@ class NNSearchPlayer(Player):
 
     def __init__(
         self, color, model_path, depth=2, prune=1, maxleaves=4000,
-        place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0,
+        place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0, fair=1,
     ):
         super().__init__(color)
         self.net = get_net(model_path)
@@ -112,6 +112,11 @@ class NNSearchPlayer(Player):
         # Opening completion only for the `openk` best candidates by base_fn
         # (0 = all candidates).
         self.openk = int(openk)
+        # Fair play: search a copy of the game in which the other hands are
+        # what this seat can know (cbot.belief), not the real ones. 0 searches
+        # the real game, every hand face up (how the bots up to A20big were
+        # trained and evaluated).
+        self.fair = int(fair)
 
     def _actions(self, game, root):
         if self.prune and not root:
@@ -122,6 +127,8 @@ class NNSearchPlayer(Player):
         self.last_value = None
         if len(playable_actions) == 1:
             return playable_actions[0]
+        if self.fair:
+            game = belief.determinize(game, self.color, self.rng)
         if self.initmode == 2 and game.state.is_initial_build_phase:
             return self._complete_opening(game, playable_actions)
         if self.initf is not None and game.state.is_initial_build_phase:
