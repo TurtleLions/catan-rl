@@ -32,6 +32,7 @@ from cbot import fast  # noqa: F401  (patch Catanatron before taking references)
 
 VP_CARD = "VICTORY_POINT"
 PLAYABLE = ("KNIGHT", "MONOPOLY", "YEAR_OF_PLENTY", "ROAD_BUILDING")
+DEALS = 1000  # tries at a deal of development cards that leaves the game unfinished
 _TRACKERS = OrderedDict()  # (game id, color) -> _Tracker; a few games at a time
 _KEEP = 16
 
@@ -191,7 +192,23 @@ def determinize(game, me, rng):
             n = ps[f"{k}_{card}_IN_HAND"]
             pool += [card] * n
             sizes[c] += n
-    rng.shuffle(pool)
+    # The game is not over, so nobody holds enough victory-point cards to
+    # have won: deal again until that holds (conditioning on it). Should that
+    # keep failing, deal the other cards first.
+    room = {
+        c: g.vps_to_win - 1 - ps[f"P{st.color_to_index[c]}_VICTORY_POINTS"] for c in opps
+    }
+    for _ in range(DEALS):
+        rng.shuffle(pool)
+        i, ok = 0, True
+        for c in opps:
+            ok = ok and pool[i : i + sizes[c]].count(VP_CARD) <= room[c]
+            i += sizes[c]
+        if ok:
+            break
+    else:
+        rng.shuffle(pool)
+        pool.sort(key=lambda card: card == VP_CARD)
     for c in opps:
         k = f"P{st.color_to_index[c]}"
         dealt, pool = pool[: sizes[c]], pool[sizes[c] :]
