@@ -34,7 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Cbot(Player):
-    """Search with a learned value net (A20big ensemble: 71.9% vs three AlphaBetas)."""
+    """Search with a learned value net (A20big ensemble: 70.0% vs three AlphaBetas, hidden cards guessed)."""
 
     LABEL = "CBOT"
 
