@@ -2,7 +2,7 @@
 # Train N value-net seeds in parallel and write the ensemble spec to models/NAME.txt.
 #   cbot/train_ens.sh NAME N LAM THREADS data/r0 data/r1 ...
 # Env: COLS (default compact), PLAYERS (default 2; 4 for multiplayer shards),
-#      HIDDEN (layer sizes, default 256,128),
+#      HIDDEN (layer sizes, default 256,128), EPOCHS (default 3),
 #      STAGGER (seconds between trainer starts, so data loading peaks don't overlap).
 # Nets already written (models/NAME_s<i>.npz) are kept, so a rerun only trains the rest.
 set -e
@@ -13,7 +13,7 @@ for i in $(seq 1 "$N"); do
   out=models/${NAME}_s$i.npz
   paths+=("$out")
   if [ -f "$out" ]; then continue; fi
-  .venv/bin/python -m cbot.train --data "$@" --out "$out" --epochs 3 --threads "$THREADS" \
+  .venv/bin/python -m cbot.train --data "$@" --out "$out" --epochs "${EPOCHS:-3}" --threads "$THREADS" \
     --hidden "${HIDDEN:-256,128}" --cols "${COLS:-compact}" --eval-every 2000 --lam "$LAM" --players "${PLAYERS:-2}" > runs/train_${NAME}_s$i.log 2>&1 &
   if [ "$i" -lt "$N" ]; then sleep "${STAGGER:-0}"; fi
 done

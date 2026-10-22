@@ -89,14 +89,18 @@ class NNSearchPlayer(Player):
     LABEL = "NNSearch"
 
     def __init__(
-        self, color, model_path, depth=2, prune=1, maxleaves=4000,
+        self, color, model_path, depth=2, prune=None, maxleaves=4000,
         place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0, fair=1,
         trade=0, offerk=3, policy=None, pk=4,
     ):
         super().__init__(color)
         self.net = get_net(model_path)
         self.depth = int(depth)
-        self.prune = int(prune)
+        # Below the root, search Catanatron's pruned move list (1) or every
+        # move (0). Its pruning drops most robber moves; in 1v1 searching them
+        # all won 83.6% vs 82.5% against AlphaBeta (4000 games, same seeds), so
+        # the default is 0 in 1v1 and 1 with more players (as evaluated).
+        self.prune = None if prune is None else int(prune)
         self.maxleaves = int(maxleaves)
         # Opening placement by simulation: `place` rollouts for each of the
         # net's `topk` settlement candidates; score = mix*net + (1-mix)*rollouts.
@@ -145,7 +149,8 @@ class NNSearchPlayer(Player):
     def _actions(self, game, root):
         if self.policy is not None and not root:
             return self.policy_mod.top(self.policy, game, game.playable_actions, self.pk)
-        if self.prune and not root:
+        prune = self.prune if self.prune is not None else len(game.state.colors) > 2
+        if prune and not root:
             return list_prunned_actions(game)
         return game.playable_actions
 
