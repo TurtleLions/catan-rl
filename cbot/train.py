@@ -17,23 +17,31 @@ import torch
 import torch.nn as nn
 
 
-def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None):
+def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None, searched_only=False):
     files = sorted(f for d in dirs for f in glob.glob(f"{d}/*.npz") if not f.endswith(".tmp.npz"))
     Xs, ys = [], []
     players = 2
     for f in files:
         d = np.load(f)
-        Xs.append(d["X"] if project is None else project(d["X"]))
         v = d["v"] if "v" in d else None
+        keep = slice(None)
+        if searched_only:
+            # Only states the generator searched (both seats' rows have a value).
+            if v is None:
+                continue
+            keep = ~np.isnan(v if v.ndim == 1 else v[:, 0])
+            v = v[keep]
+        X = d["X"][keep]
+        Xs.append(X if project is None else project(X))
         if v is not None and v.ndim == 2:
             # Multiplayer: y = winner seat relative to this row's player.
             players = v.shape[1]
-            y = np.eye(players, dtype=np.float32)[d["y"]]
+            y = np.eye(players, dtype=np.float32)[d["y"][keep]]
             if lam < 1.0:
                 has = ~np.isnan(v[:, 0])
                 y[has] = lam * y[has] + (1 - lam) * v[has]
         else:
-            y = d["y"].astype(np.float32)
+            y = d["y"][keep].astype(np.float32)
             if lam < 1.0 and v is not None:
                 # Soft target: blend outcome with the generator's search value.
                 y = np.where(np.isnan(v), y, lam * y + (1 - lam) * v).astype(np.float32)
@@ -68,6 +76,9 @@ def select_cols(kind, players=2):
         )
     if kind == "compact+opp":
         return np.array([i for i, n in enumerate(names) if not n.startswith(board)])
+    if kind == "board":
+        # Everything public: the compact features plus the raw board.
+        return np.array([i for i, n in enumerate(names) if not n.startswith("OPP_")])
     raise ValueError(kind)
 
 
@@ -115,6 +126,8 @@ def main():
     ap.add_argument("--eval-every", type=int, default=200)
     ap.add_argument("--lam", type=float, default=1.0)
     ap.add_argument("--players", type=int, default=2)
+    ap.add_argument("--searched-only", action="store_true",
+                    help="drop states without a search value (for --lam 0)")
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     hidden = [int(h) for h in args.hidden.split(",")]
@@ -137,7 +150,8 @@ def main():
         return np.concatenate(out)
 
     # Project each shard as it loads so the full 721-wide matrix never sits in memory.
-    Xtr, ytr, Xva, yva = load(args.data, lam=args.lam, project=project)
+    Xtr, ytr, Xva, yva = load(args.data, lam=args.lam, project=project,
+                                  searched_only=args.searched_only)
     assert (ytr.ndim == 2) == multi, "--players does not match the data"
     print(f"loaded train {Xtr.shape} val {Xva.shape} pos {ytr.mean(0)} in {time.time() - t0:.0f}s", flush=True)
     mean = Xtr[:200000].astype(np.float32).mean(0)
