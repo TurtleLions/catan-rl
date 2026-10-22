@@ -1,15 +1,29 @@
 diff --git a/catanatron/catanatron/serialization.py b/catanatron/catanatron/serialization.py
-index 7cb5330..85f07fd 100644
+index 7cb5330..2b6e203 100644
 --- a/catanatron/catanatron/serialization.py
 +++ b/catanatron/catanatron/serialization.py
-@@ -394,10 +394,14 @@ def client_view(doc, perspective=None):
+@@ -359,7 +359,8 @@ def client_view(doc, perspective=None):
+     which would reveal future draws, is removed.
+ 
+     ``perspective`` additionally removes what only the *other* seats know --
+-    their hands, and the private half of what they did. Pass it for anyone
++    their hands, the private half of what they did, and the deck's makeup
++    (which, less the cards they bought, would show their development cards). Pass it for anyone
+     who is playing (a bot on the wire always gets it); leave it out for a
+     spectator, a replay, or an accumulator collecting training data.
+     """
+@@ -393,11 +394,18 @@ def client_view(doc, perspective=None):
+         # Counts the victory-point cards still in hand.
          state.pop(prefix + "ACTUAL_VICTORY_POINTS")
      view["player_state"] = state
- 
++    # The deck's makeup, less the cards bought from it, would tell a seat
++    # which development cards the others hold: only its size is on the table.
++    view["development_listdeck"] = {"FACE_DOWN": len(doc["development_listdeck"])}
++
 +    def sees_result(a):
 +        # The robbed player knows which card they lost, as the robber does.
 +        return a[0] == color or (a[1] == "MOVE_ROBBER" and a[2][1] == color)
-+
+ 
      view["action_records"] = [
          (
              [[a[0], a[1], None if a[1] in SECRET_VALUE else a[2]], None]
@@ -19,10 +33,27 @@ index 7cb5330..85f07fd 100644
          )
          for a, result in doc["action_records"]
 diff --git a/tests/test_serialization.py b/tests/test_serialization.py
-index 89020ee..3b35276 100644
+index 89020ee..8066366 100644
 --- a/tests/test_serialization.py
 +++ b/tests/test_serialization.py
-@@ -352,7 +352,10 @@ def test_what_the_robber_stole_is_hidden_but_where_it_went_is_not():
+@@ -227,6 +227,16 @@ def test_client_view_hides_deck_order_but_keeps_composition():
+         )
+ 
+ 
++def test_a_seat_sees_only_the_size_of_the_deck():
++    """The makeup, less the cards bought, would show the others' dev cards."""
++    game, _ = played_game()
++    doc = state_to_json(game)
++    view = client_view(doc, Color.RED)
++    assert view["development_listdeck"] == {
++        "FACE_DOWN": len(doc["development_listdeck"])
++    }
++
++
+ def test_client_view_hides_the_random_stream():
+     """The rng state is every roll and draw still to come."""
+     game, _ = played_game()
+@@ -352,7 +362,10 @@ def test_what_the_robber_stole_is_hidden_but_where_it_went_is_not():
          coordinate, victim = action[2]
          assert isinstance(coordinate, list), "the tile is public"
          assert victim is None or isinstance(victim, str), "who was robbed is public"
@@ -111,6 +142,75 @@ index 2c39fb8..b269e9f 100644
  }
  
  function DrawerContent({ gameState }: { gameState: GameState }) {
+diff --git a/ui/src/components/PlayerStateBox.scss b/ui/src/components/PlayerStateBox.scss
+index 25c7fd9..48ae6a0 100644
+--- a/ui/src/components/PlayerStateBox.scss
++++ b/ui/src/components/PlayerStateBox.scss
+@@ -46,9 +46,18 @@
+       font-size: 0.7rem;
+     }
+   }
+-  // A hand seen from another seat: countable, not readable.
+-  .hidden-cards {
+-    background: #6b6b6b;
++  // A hand seen from another seat: countable, not readable. A striped card
++  // back, so it can't be taken for a resource (ore's rim is gray too).
++  .face-down {
++    background: #e8dcc0;
++    div {
++      background: repeating-linear-gradient(
++        45deg,
++        #7a1f1f 0 4px,
++        #9b3030 4px 8px
++      );
++      text-shadow: 0 0 3px black;
++    }
+   }
+ }
+ 
+diff --git a/ui/src/components/ResourceCards.test.tsx b/ui/src/components/ResourceCards.test.tsx
+index 99dee56..5b0c4ce 100644
+--- a/ui/src/components/ResourceCards.test.tsx
++++ b/ui/src/components/ResourceCards.test.tsx
+@@ -29,7 +29,7 @@ test("shows every card of a hand it is allowed to read", () => {
+ 
+   expect(container.querySelectorAll(".wood-cards")).toHaveLength(1);
+   expect(container.querySelectorAll(".sheep-cards")).toHaveLength(1);
+-  expect(container.querySelectorAll(".hidden-cards")).toHaveLength(0);
++  expect(container.querySelectorAll(".face-down")).toHaveLength(0);
+   expect(screen.getByTitle("1 Knight Card(s)")).toBeInTheDocument();
+ });
+ 
+@@ -39,6 +39,7 @@ test("shows an opponent's hand as two face-down counts", () => {
+   );
+ 
+   expect(container.querySelectorAll(".wood-cards")).toHaveLength(0);
++  expect(container.querySelectorAll(".face-down")).toHaveLength(2);
+   expect(screen.getByTitle("5 Resource Card(s), face down")).toBeInTheDocument();
+   expect(
+     screen.getByTitle("2 Development Card(s), face down")
+diff --git a/ui/src/components/ResourceCards.tsx b/ui/src/components/ResourceCards.tsx
+index 8f6504b..ab1b5b5 100644
+--- a/ui/src/components/ResourceCards.tsx
++++ b/ui/src/components/ResourceCards.tsx
+@@ -118,7 +118,7 @@ function FaceDownCards({
+     <div className="resource-cards" title="Resource Cards">
+       {resources !== 0 && (
+         <div
+-          className="hidden-cards center-text card"
++          className="face-down center-text card"
+           title={resources + " Resource Card(s), face down"}
+         >
+           <Paper>{resources}</Paper>
+@@ -126,7 +126,7 @@ function FaceDownCards({
+       )}
+       {developments !== 0 && (
+         <div
+-          className="dev-cards center-text card"
++          className="dev-cards face-down center-text card"
+           title={developments + " Development Card(s), face down"}
+         >
+           <Paper>
 diff --git a/ui/src/components/RightDrawer.scss b/ui/src/components/RightDrawer.scss
 index 6c577d9..91d4268 100644
 --- a/ui/src/components/RightDrawer.scss
@@ -1204,3 +1304,14 @@ index e4eeaff..d49666b 100644
 +
 +$ocean: #2f78c4;
 +$navy: #17406b;
+diff --git a/ui/vite.config.ts b/ui/vite.config.ts
+index 0e42b18..360a19e 100644
+--- a/ui/vite.config.ts
++++ b/ui/vite.config.ts
+@@ -11,5 +11,6 @@ export default defineConfig({
+   server: {
+     port: 3000,
+     host: true, // needed for the Docker Container port mapping to work
++    allowedHosts: [".ts.net"], // reached over Tailscale (tailscale serve)
+   },
+ });
