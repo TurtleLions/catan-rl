@@ -22,7 +22,7 @@ from cbot import fast  # noqa: F401  (patch Catanatron before taking references)
 from catanatron.players.value import ValueFunctionPlayer, base_fn
 from catanatron.players.tree_search_utils import list_prunned_actions
 
-from cbot import belief, chance, feats
+from cbot import belief, chance, feats, trade
 
 
 class ValueNet:
@@ -87,6 +87,7 @@ class NNSearchPlayer(Player):
     def __init__(
         self, color, model_path, depth=2, prune=1, maxleaves=4000,
         place=0, topk=6, mix=0.5, initf=0, qroll=0, sym=0, openk=0, fair=1,
+        trade=0, offerk=3,
     ):
         super().__init__(color)
         self.net = get_net(model_path)
@@ -117,6 +118,11 @@ class NNSearchPlayer(Player):
         # the real game, every hand face up (how the bots up to A20big were
         # trained and evaluated).
         self.fair = int(fair)
+        # Trades between players: make offers on its own turn (answering
+        # offers and confirming trades are always on). The `offerk` most
+        # promising offers by the net alone are searched in full.
+        self.trade = int(trade)
+        self.offerk = int(offerk)
 
     def _actions(self, game, root):
         if self.prune and not root:
@@ -125,7 +131,7 @@ class NNSearchPlayer(Player):
 
     def decide(self, game, playable_actions):
         self.last_value = None
-        if len(playable_actions) == 1:
+        if len(playable_actions) == 1 and not (self.trade and trade.offers(game, self.color)):
             return playable_actions[0]
         if self.fair:
             game = belief.determinize(game, self.color, self.rng)
@@ -138,6 +144,11 @@ class NNSearchPlayer(Player):
             ):
                 return self._place_by_rollouts(game, self._base_shortlist(game))
             return self.initf.decide(game, playable_actions)
+        prompt = game.state.current_prompt
+        if prompt == ActionPrompt.DECIDE_TRADE:
+            return self._answer(game, playable_actions)
+        if prompt == ActionPrompt.DECIDE_ACCEPTEES:
+            return self._confirm(game, playable_actions)
         leaves = []
         tree = self._build(game, self.depth, leaves, root=True)
         if leaves:
@@ -159,7 +170,95 @@ class NNSearchPlayer(Player):
             and game.state.current_prompt == ActionPrompt.BUILD_INITIAL_SETTLEMENT
         ):
             return self._place_by_rollouts(game, scored[: self.topk])
+        if self.trade:
+            offer = self._offer(game, self.last_vec)
+            if offer is not None:
+                return offer
         return scored[0][1]
+
+    def _search(self, games):
+        """Win-probability vector of each position, searched as a root."""
+        out = []
+        for g in games:
+            leaves = []
+            tree = self._build(g, self.depth, leaves, root=True)
+            vals = self._eval(leaves) if leaves else np.zeros(0)
+            out.append(self._value(tree, vals))
+        return out
+
+    def _answer(self, game, playable_actions):
+        """Accept an offer when trading beats calling it off, for this seat."""
+        acts = {a.action_type: a for a in playable_actions}
+        if ActionType.ACCEPT_TRADE not in acts:
+            return acts[ActionType.REJECT_TRADE]
+        st = game.state
+        offerer = st.colors[st.current_trade[10]]
+        yes, no = self._search(
+            [trade.traded(game, offerer, self.color, st.current_trade), trade.untraded(game)]
+        )
+        me = self._me(game)
+        self.last_value = float(max(yes[me], no[me]))
+        return acts[ActionType.ACCEPT_TRADE if yes[me] > no[me] else ActionType.REJECT_TRADE]
+
+    def _confirm(self, game, playable_actions):
+        """Trade with whichever acceptor is best for this seat, or cancel."""
+        st = game.state
+        games = [
+            trade.traded(game, self.color, a.value[10], st.current_trade)
+            if a.action_type == ActionType.CONFIRM_TRADE
+            else trade.untraded(game)
+            for a in playable_actions
+        ]
+        me = self._me(game)
+        vals = [v[me] for v in self._search(games)]
+        i = int(np.argmax(vals))
+        self.last_value = float(vals[i])
+        return playable_actions[i]
+
+    def _offer(self, game, stay):
+        """An offer worth making, or None. `stay` is the value vector of the
+        best move without trading. Each other player is assumed to accept
+        when the trade beats `stay` for them, and this seat then trades with
+        the acceptor best for it."""
+        cands = trade.offers(game, self.color)
+        if not cands:
+            return None
+        st = game.state
+        me = self._me(game)
+        pairs = [
+            (o, j)
+            for o in cands
+            for j, c in enumerate(st.colors)
+            if j != me and trade.holds(game, c, o.value[5:10])
+        ]
+        if not pairs:
+            return None
+        # Screen with the net alone, then search the best few offers.
+        games = [trade.traded(game, self.color, st.colors[j], o.value) for o, j in pairs]
+        quick = self._eval(games + [game])
+        base = quick[-1]
+        best = {}
+        for (o, j), v in zip(pairs, quick):
+            if v[j] > base[j] and v[me] > base[me]:
+                best[o] = max(best.get(o, 0.0), v[me])
+        keep = sorted(best, key=lambda o: -best[o])[: self.offerk]
+        pairs = [(o, j) for o, j in pairs if o in keep]
+        if not pairs:
+            return None
+        vals = self._search(
+            [trade.traded(game, self.color, st.colors[j], o.value) for o, j in pairs]
+        )
+        value = {}
+        for (o, j), v in zip(pairs, vals):
+            if v[j] > stay[j]:
+                value[o] = max(value.get(o, 0.0), v[me])
+        if not value:
+            return None
+        o = max(value, key=value.get)
+        if value[o] <= stay[me] + OFFER_MARGIN:
+            return None
+        self.last_value = float(value[o])
+        return o
 
     def _complete_opening(self, game, actions):
         if self.openk and len(actions) > self.openk:
@@ -266,6 +365,8 @@ class NNSearchPlayer(Player):
                 best = v
         return best
 
+
+OFFER_MARGIN = 0.005  # an offer must gain this much over not trading
 
 _ROLLOUT_POLICY = {}
 

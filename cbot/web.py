@@ -9,6 +9,8 @@ Setup, once (Catanatron checked out in vendor/catanatron as in RESULTS.md):
 
 The patch: games are shown from the human's seat (other hands as counts),
 the robber asks whom to rob, a robbed player sees the card they lost,
+trades with the other players (offer from the Trade menu after rolling;
+answer or pick a partner in the toolbar),
 standard rules by default (10 points, discard over 7, no friendly robber,
 you against three CBOTs), no full-information analysis panel, and a lighter
 theme; web_tiles has plain hexes in the standard tile colors.
@@ -42,6 +44,7 @@ class Cbot(Player):
     class Params:
         model: str = "A20big"  # models/<model>.txt holds the NN spec
         depth: int = 2
+        trade: int = 1  # offer trades to other players (answering is always on)
 
     def __init__(self, color, params=None):
         super().__init__(color, params)
@@ -52,6 +55,7 @@ class Cbot(Player):
         spec = spec.replace("models/", os.path.join(ROOT, "models") + "/")
         if self.params.depth != 2:
             spec += f":depth={self.params.depth}"
+        spec += f":trade={self.params.trade}"
         self.bot = make_player(spec, color)
 
     def decide(self, game, playable_actions):

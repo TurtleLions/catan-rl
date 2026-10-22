@@ -10,8 +10,9 @@ moves out on copies. determinize(game, me, rng) returns a copy in which what
     not. The record is replayed on a shadow state in which each such card is
     drawn from the victim's hand in the shadow. A draw that later proves
     impossible (a hand going negative, a hand total or monopoly that
-    disagrees with the real one) is redrawn, going back to earlier steals
-    when needed, so the guess always explains the whole record.
+    disagrees with the real one, an offer of cards the offerer would not
+    hold) is redrawn, going back to earlier steals when needed, so the guess
+    always explains the whole record.
   * Development cards in opponents' hands are dealt again from everything
     `me` has not seen (the deck plus those hands), so each opponent keeps
     their number of cards; victory points follow the cards dealt.
@@ -35,6 +36,7 @@ PLAYABLE = ("KNIGHT", "MONOPOLY", "YEAR_OF_PLENTY", "ROAD_BUILDING")
 DEALS = 1000  # tries at a deal of development cards that leaves the game unfinished
 _TRACKERS = OrderedDict()  # (game id, color) -> _Tracker; a few games at a time
 _KEEP = 16
+_SHOWS = (ActionType.OFFER_TRADE, ActionType.ACCEPT_TRADE)
 
 
 class _Inconsistent(Exception):
@@ -115,6 +117,12 @@ class _Tracker:
             if any(v < 0 for c in s.colors for v in _hand(s, c)):
                 self._backtrack()
                 continue
+            # Offering cards, or accepting an offer, shows that one holds them.
+            if a.action_type in _SHOWS:
+                need = a.value[:5] if a.action_type == ActionType.OFFER_TRADE else a.value[5:10]
+                if any(n > h for n, h in zip(need, _hand(s, a.color))):
+                    self._backtrack()
+                    continue
             self.n += 1
 
     def hands(self, game):

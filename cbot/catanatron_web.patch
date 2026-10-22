@@ -124,6 +124,548 @@ index 6c577d9..91d4268 100644
      color: white;
    }
  
+diff --git a/ui/src/components/TradeDialog.scss b/ui/src/components/TradeDialog.scss
+new file mode 100644
+index 0000000..eb67d3c
+--- /dev/null
++++ b/ui/src/components/TradeDialog.scss
+@@ -0,0 +1,134 @@
++@use "../variables.scss";
++
++.trade-dialog {
++  .MuiPaper-root {
++    background-color: #f7f1e1;
++    color: #222;
++    border-radius: 8px;
++  }
++
++  .MuiDialogTitle-root {
++    text-align: center;
++    font-weight: bold;
++  }
++
++  .trade-grid {
++    display: grid;
++    grid-template-columns: 1fr auto auto;
++    align-items: center;
++    column-gap: 12px;
++    row-gap: 4px;
++  }
++
++  .trade-row {
++    display: contents;
++  }
++
++  .head {
++    font-size: 0.8rem;
++    font-weight: bold;
++    text-align: center;
++    text-transform: uppercase;
++  }
++
++  .stepper {
++    display: flex;
++    align-items: center;
++
++    .MuiButton-root {
++      min-width: 32px;
++      width: 32px;
++      height: 32px;
++      font-size: 1.1rem;
++    }
++
++    .count {
++      width: 20px;
++      text-align: center;
++      font-weight: bold;
++    }
++  }
++
++  .summary {
++    margin: 16px 0 0;
++    text-align: center;
++    font-weight: bold;
++  }
++
++  .held {
++    font-weight: normal;
++    color: #555;
++  }
++}
++
++.trade-dialog .resource-name,
++.trade-panel .resource-name {
++  font-weight: bold;
++
++  &.wood {
++    color: #2f7d3a;
++  }
++  &.brick {
++    color: #c4623d;
++  }
++  &.sheep {
++    color: #6f9e3c;
++  }
++  &.wheat {
++    color: #b8901f;
++  }
++  &.ore {
++    color: #5f6168;
++  }
++}
++
++// Inside the actions toolbar, in place of the play buttons.
++.actions-toolbar .trade-panel {
++  flex: 1;
++  display: flex;
++  flex-direction: column;
++  justify-content: center;
++  gap: 6px;
++  min-width: 0;
++  color: white;
++
++  .trade-text {
++    font-size: 0.95rem;
++    text-align: center;
++  }
++
++  .trade-buttons {
++    display: flex;
++    justify-content: center;
++    gap: 8px;
++
++    button {
++      width: auto;
++      min-width: 80px;
++      height: 32px;
++    }
++  }
++
++  .who {
++    font-weight: bold;
++    padding: 0 4px;
++    border-radius: 3px;
++  }
++
++  .RED {
++    background: variables.$red;
++    color: white;
++  }
++  .BLUE {
++    background: variables.$blue;
++    color: white;
++  }
++  .ORANGE {
++    background: variables.$orange;
++    color: #1a1a1a;
++  }
++  .WHITE {
++    background: white;
++    color: #1a1a1a;
++  }
++}
+diff --git a/ui/src/components/TradeDialog.tsx b/ui/src/components/TradeDialog.tsx
+new file mode 100644
+index 0000000..68c1d20
+--- /dev/null
++++ b/ui/src/components/TradeDialog.tsx
+@@ -0,0 +1,108 @@
++import { useState } from "react";
++import {
++  Dialog,
++  DialogTitle,
++  DialogContent,
++  DialogActions,
++  Button,
++} from "@mui/material";
++import type { ResourceCard } from "../utils/api.types";
++import { RESOURCE_ORDER, tradeBundle } from "../utils/promptUtils";
++
++import "./TradeDialog.scss";
++
++type TradeDialogProps = {
++  open: boolean;
++  hand: number[]; // cards in hand, in RESOURCE_ORDER
++  onClose: () => void;
++  onOffer: (value: number[]) => void; // 5 to give, then 5 wanted
++};
++
++/** Builds an offer to the other players: cards to give for cards wanted. */
++export default function TradeDialog({
++  open,
++  hand,
++  onClose,
++  onOffer,
++}: TradeDialogProps) {
++  const [give, setGive] = useState([0, 0, 0, 0, 0]);
++  const [want, setWant] = useState([0, 0, 0, 0, 0]);
++
++  // A resource is on one side of the offer only.
++  const step = (side: "give" | "want", i: number, delta: number) => {
++    const g = [...give];
++    const w = [...want];
++    if (side === "give") {
++      g[i] = Math.min(hand[i], Math.max(0, g[i] + delta));
++      if (g[i] > 0) w[i] = 0;
++    } else {
++      w[i] = Math.min(19, Math.max(0, w[i] + delta));
++      if (w[i] > 0) g[i] = 0;
++    }
++    setGive(g);
++    setWant(w);
++  };
++  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
++  const valid = sum(give) > 0 && sum(want) > 0;
++  const close = () => {
++    setGive([0, 0, 0, 0, 0]);
++    setWant([0, 0, 0, 0, 0]);
++    onClose();
++  };
++
++  const stepper = (side: "give" | "want", i: number) => {
++    const n = side === "give" ? give[i] : want[i];
++    const max = side === "give" ? hand[i] : 19;
++    return (
++      <div className="stepper">
++        <Button disabled={n === 0} onClick={() => step(side, i, -1)}>
++          −
++        </Button>
++        <span className="count">{n}</span>
++        <Button disabled={n >= max} onClick={() => step(side, i, 1)}>
++          +
++        </Button>
++      </div>
++    );
++  };
++
++  return (
++    <Dialog open={open} onClose={close} className="trade-dialog" maxWidth="xs" fullWidth>
++      <DialogTitle>Offer a trade</DialogTitle>
++      <DialogContent>
++        <div className="trade-grid">
++          <span />
++          <span className="head">You give</span>
++          <span className="head">You get</span>
++          {RESOURCE_ORDER.map((r: ResourceCard, i) => (
++            <div className="trade-row" key={r}>
++              <span className={`resource-name ${r.toLowerCase()}`}>
++                {r} <span className="held">({hand[i]})</span>
++              </span>
++              {stepper("give", i)}
++              {stepper("want", i)}
++            </div>
++          ))}
++        </div>
++        <p className="summary">
++          {valid
++            ? `${tradeBundle(give)} for ${tradeBundle(want)}`
++            : "Pick cards to give and cards you want."}
++        </p>
++      </DialogContent>
++      <DialogActions>
++        <Button onClick={close}>Cancel</Button>
++        <Button
++          variant="contained"
++          disabled={!valid}
++          onClick={() => {
++            onOffer([...give, ...want]);
++            close();
++          }}
++        >
++          Offer to everyone
++        </Button>
++      </DialogActions>
++    </Dialog>
++  );
++}
+diff --git a/ui/src/components/TradePanel.test.tsx b/ui/src/components/TradePanel.test.tsx
+new file mode 100644
+index 0000000..8cb2fd0
+--- /dev/null
++++ b/ui/src/components/TradePanel.test.tsx
+@@ -0,0 +1,82 @@
++import { cleanup, fireEvent, render, screen } from "@testing-library/react";
++import { MemoryRouter, Route, Routes } from "react-router-dom";
++import { afterEach, expect, test, vi } from "vitest";
++
++import { StateProvider } from "../store";
++import { postAction } from "../utils/apiClient";
++import { makeGameState } from "../test/fixtures";
++import type { GameAction, GameState } from "../utils/api.types";
++import TradePanel from "./TradePanel";
++
++vi.mock("../utils/apiClient", () => ({ postAction: vi.fn() }));
++vi.mock("./Snackbar", () => ({ dispatchSnackbar: vi.fn() }));
++vi.mock("notistack", () => ({
++  useSnackbar: () => ({ enqueueSnackbar: vi.fn(), closeSnackbar: vi.fn() }),
++}));
++
++afterEach(() => {
++  cleanup();
++  vi.clearAllMocks();
++});
++
++// RED (a bot, seat 0) offers 1 WOOD for 1 ORE; BLUE (the human) answers.
++const trade = [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];
++
++function renderPanel(gameState: GameState) {
++  vi.mocked(postAction).mockResolvedValue(gameState);
++  render(
++    <StateProvider>
++      <MemoryRouter initialEntries={["/games/g1"]}>
++        <Routes>
++          <Route path="/games/:gameId" element={<TradePanel gameState={gameState} />} />
++        </Routes>
++      </MemoryRouter>
++    </StateProvider>,
++  );
++}
++
++test("answering an offer posts the chosen answer", () => {
++  const accept: GameAction = ["BLUE", "ACCEPT_TRADE", trade];
++  const reject: GameAction = ["BLUE", "REJECT_TRADE", trade];
++  renderPanel(
++    makeGameState({
++      current_color: "BLUE",
++      current_prompt: "DECIDE_TRADE",
++      is_resolving_trade: true,
++      current_trade: trade,
++      current_playable_actions: [reject, accept],
++    }),
++  );
++  expect(screen.getByText(/offers 1 WOOD for/)).toBeTruthy();
++  fireEvent.click(screen.getByText("Accept"));
++  expect(postAction).toHaveBeenCalledWith("g1", accept);
++});
++
++test("accept is disabled without the cards", () => {
++  renderPanel(
++    makeGameState({
++      current_color: "BLUE",
++      current_prompt: "DECIDE_TRADE",
++      is_resolving_trade: true,
++      current_trade: trade,
++      current_playable_actions: [["BLUE", "REJECT_TRADE", trade]],
++    }),
++  );
++  expect(screen.getByText("Accept").closest("button")?.disabled).toBe(true);
++  expect(screen.getByText(/don't have the cards/)).toBeTruthy();
++});
++
++test("the offerer picks a partner among those who accepted", () => {
++  const confirm: GameAction = ["BLUE", "CONFIRM_TRADE", [...trade.slice(0, 10), "RED"]];
++  renderPanel(
++    makeGameState({
++      current_color: "BLUE",
++      current_prompt: "DECIDE_ACCEPTEES",
++      is_resolving_trade: true,
++      current_trade: [...trade.slice(0, 10), 1],
++      current_playable_actions: [["BLUE", "CANCEL_TRADE", null], confirm],
++    }),
++  );
++  fireEvent.click(screen.getByText("RED"));
++  expect(postAction).toHaveBeenCalledWith("g1", confirm);
++});
+diff --git a/ui/src/components/TradePanel.tsx b/ui/src/components/TradePanel.tsx
+new file mode 100644
+index 0000000..64f3e99
+--- /dev/null
++++ b/ui/src/components/TradePanel.tsx
+@@ -0,0 +1,80 @@
++import { useContext } from "react";
++import { Button } from "@mui/material";
++import { useParams } from "react-router-dom";
++import { useSnackbar } from "notistack";
++
++import { store } from "../store";
++import ACTIONS from "../actions";
++import type { Color, GameAction, GameState } from "../utils/api.types";
++import { postAction } from "../utils/apiClient";
++import { tradeBundle } from "../utils/promptUtils";
++import { dispatchSnackbar } from "./Snackbar";
++
++import "./TradeDialog.scss";
++
++/** Shown instead of the play buttons while the human answers an offer
++ * (DECIDE_TRADE) or picks whom to trade with (DECIDE_ACCEPTEES). */
++export default function TradePanel({ gameState }: { gameState: GameState }) {
++  const { gameId } = useParams();
++  const { dispatch } = useContext(store);
++  const { enqueueSnackbar, closeSnackbar } = useSnackbar();
++
++  const play = (action: GameAction) => async () => {
++    if (!gameId) return;
++    const next = await postAction(gameId, action);
++    dispatch({ type: ACTIONS.SET_GAME_STATE, data: next });
++    dispatchSnackbar(enqueueSnackbar, closeSnackbar, next);
++  };
++  const trade = gameState.current_trade;
++  const give = tradeBundle(trade.slice(0, 5));
++  const want = tradeBundle(trade.slice(5, 10));
++  const actions = gameState.current_playable_actions;
++  const find = (type: string) => actions.find((a) => a[1] === type);
++
++  if (gameState.current_prompt === "DECIDE_TRADE") {
++    const offerer = gameState.colors[trade[10]];
++    const accept = find("ACCEPT_TRADE");
++    const reject = find("REJECT_TRADE");
++    return (
++      <div className="trade-panel">
++        <div className="trade-text">
++          <span className={`who ${offerer}`}>{offerer}</span> offers {give} for
++          your {want}
++          {!accept && <em> (you don't have the cards)</em>}
++        </div>
++        <div className="trade-buttons">
++          <Button variant="contained" disabled={!accept} onClick={accept && play(accept)}>
++            Accept
++          </Button>
++          <Button variant="contained" color="secondary" onClick={reject && play(reject)}>
++            Decline
++          </Button>
++        </div>
++      </div>
++    );
++  }
++
++  // DECIDE_ACCEPTEES: the human offered and at least one player accepted.
++  const confirms = actions.filter((a) => a[1] === "CONFIRM_TRADE");
++  const cancel = find("CANCEL_TRADE");
++  return (
++    <div className="trade-panel">
++      <div className="trade-text">
++        Your {give} for {want}: accepted by
++      </div>
++      <div className="trade-buttons">
++        {confirms.map((a) => {
++          const partner = (a[2] as unknown[])[10] as Color;
++          return (
++            <Button key={partner} variant="contained" className={`who-btn ${partner}`} onClick={play(a)}>
++              {partner}
++            </Button>
++          );
++        })}
++        <Button variant="contained" color="secondary" onClick={cancel && play(cancel)}>
++          Call off
++        </Button>
++      </div>
++    </div>
++  );
++}
+diff --git a/ui/src/pages/ActionsToolbar.tsx b/ui/src/pages/ActionsToolbar.tsx
+index ddef735..5667b13 100644
+--- a/ui/src/pages/ActionsToolbar.tsx
++++ b/ui/src/pages/ActionsToolbar.tsx
+@@ -26,26 +26,20 @@ import Prompt from "../components/Prompt";
+ import ResourceCards from "../components/ResourceCards";
+ import ResourceSelector from "../components/ResourceSelector";
+ import DiscardPlannerDialog from "../components/DiscardPlannerDialog";
++import TradeDialog from "../components/TradeDialog";
++import TradePanel from "../components/TradePanel";
+ import { store } from "../store";
+ import ACTIONS from "../actions";
+ import type { GameAction, ResourceCard } from "../utils/api.types"; // Add GameState to the import, adjust path if needed
+ import { getHumanColor, playerKey } from "../utils/stateUtils";
+ import { postAction } from "../utils/apiClient";
+-import { humanizeTradeAction } from "../utils/promptUtils";
++import { humanizeTradeAction, RESOURCE_ORDER } from "../utils/promptUtils";
+ import { useDiscardBatchSubmission } from "../hooks/useDiscardBatchSubmission";
+ 
+ import "./ActionsToolbar.scss";
+ import { useSnackbar } from "notistack";
+ import { dispatchSnackbar } from "../components/Snackbar";
+ 
+-const RESOURCE_ORDER: ResourceCard[] = [
+-  "WOOD",
+-  "BRICK",
+-  "SHEEP",
+-  "WHEAT",
+-  "ORE",
+-];
+-
+ function PlayButtons() {
+   const { gameId } = useParams();
+   if (!gameId) {
+@@ -56,6 +50,7 @@ function PlayButtons() {
+   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
+   const [resourceSelectorOpen, setResourceSelectorOpen] = useState(false);
+   const [discardPlannerOpen, setDiscardPlannerOpen] = useState(false);
++  const [tradeDialogOpen, setTradeDialogOpen] = useState(false);
+   const { isSubmitting, submitDiscardBatch } = useDiscardBatchSubmission();
+ 
+   const carryOutAction = useCallback(
+@@ -268,6 +263,15 @@ function PlayButtons() {
+   const tradeActions = gameState.current_playable_actions.filter(
+     (action) => action[1] === "MARITIME_TRADE",
+   );
++  const hand = RESOURCE_ORDER.map(
++    (r) => gameState.player_state[`${key}_${r}_IN_HAND`] as number,
++  );
++  // Offers to the other players: on your turn, after rolling.
++  const canOffer =
++    gameState.current_prompt === "PLAY_TURN" &&
++    !gameState.is_initial_build_phase &&
++    gameState.player_state[`${key}_HAS_ROLLED`] &&
++    hand.some((n) => n > 0);
+   const tradeItems = React.useMemo(() => {
+     const items = tradeActions.map((action) => {
+       const label = humanizeTradeAction(action);
+@@ -277,9 +281,20 @@ function PlayButtons() {
+         onClick: carryOutAction(action),
+       };
+     });
+-
+-    return items.sort((a, b) => a.label.localeCompare(b.label));
+-  }, [tradeActions, carryOutAction]);
++    items.sort((a, b) => a.label.localeCompare(b.label));
++    if (canOffer) {
++      items.unshift({
++        label: "Offer to players…",
++        disabled: false,
++        onClick: async () => setTradeDialogOpen(true),
++      });
++    }
++    return items;
++  }, [tradeActions, carryOutAction, canOffer]);
++  const offerTrade = useCallback(
++    (value: number[]) => carryOutAction([humanColor, "OFFER_TRADE", value])(),
++    [carryOutAction, humanColor],
++  );
+ 
+   const setIsMovingRobber = useCallback(() => {
+     dispatch({ type: ACTIONS.SET_IS_MOVING_ROBBER });
+@@ -354,6 +369,12 @@ function PlayButtons() {
+         onSelect={handleResourceSelection}
+         mode={isPlayingMonopoly ? "monopoly" : "yearOfPlenty"}
+       />
++      <TradeDialog
++        open={tradeDialogOpen}
++        hand={hand}
++        onClose={() => setTradeDialogOpen(false)}
++        onOffer={offerTrade}
++      />
+       <DiscardPlannerDialog
+         open={discardPlannerOpen}
+         onClose={() => setDiscardPlannerOpen(false)}
+@@ -395,6 +416,9 @@ export default function ActionsToolbar({
+ 
+   const botsTurn = gameState.bot_colors.includes(gameState.current_color);
+   const humanColor = getHumanColor(gameState);
++  const isTrading =
++    gameState.current_prompt === "DECIDE_TRADE" ||
++    gameState.current_prompt === "DECIDE_ACCEPTEES";
+   return (
+     <>
+       <div className="state-summary">
+@@ -421,7 +445,7 @@ export default function ActionsToolbar({
+       </div>
+       <div className="actions-toolbar">
+         {!(botsTurn || gameState.winning_color) && !replayMode && (
+-          <PlayButtons />
++          isTrading ? <TradePanel gameState={gameState} /> : <PlayButtons />
+         )}
+         {(botsTurn || gameState.winning_color) && (
+           <Prompt gameState={gameState} isBotThinking={isBotThinking} />
 diff --git a/ui/src/pages/Board.scss b/ui/src/pages/Board.scss
 index 8854142..9ab1adb 100644
 --- a/ui/src/pages/Board.scss
@@ -449,11 +991,114 @@ index d018ef7..5cbdeba 100644
      </TransformWrapper>
    );
  }
+diff --git a/ui/src/test/fixtures.ts b/ui/src/test/fixtures.ts
+index 3574382..9fc1c46 100644
+--- a/ui/src/test/fixtures.ts
++++ b/ui/src/test/fixtures.ts
+@@ -121,6 +121,9 @@ export function makeGameState(
+     current_turn_index: 1,
+     resource_freqdeck: [19, 19, 19, 19, 19],
+     development_listdeck: { KNIGHT: 14, VICTORY_POINT: 5 },
++    is_resolving_trade: false,
++    current_trade: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
++    acceptees: [false, false],
+     ...overrides,
+   };
+ }
+diff --git a/ui/src/utils/api.types.ts b/ui/src/utils/api.types.ts
+index 6be1577..e5e0fbe 100644
+--- a/ui/src/utils/api.types.ts
++++ b/ui/src/utils/api.types.ts
+@@ -23,6 +23,11 @@ export type GameActionRecord =
+   | [PlayMonopolyAction, null]
+   | [PlayYearOfPlentyAction, null]
+   | [MaritimeTradeAction, null]
++  | [OfferTradeAction, null]
++  | [AcceptTradeAction, null]
++  | [RejectTradeAction, null]
++  | [ConfirmTradeAction, null]
++  | [CancelTradeAction, null]
+   | [EndTurnAction, null];
+ 
+ export type RollGameAction = [Color, "ROLL", null];
+@@ -50,6 +55,14 @@ export type MaritimeTradeAction = [
+   (ResourceCard | null)[],
+ ];
+ export type EndTurnAction = [Color, "END_TURN", null];
++// Trades between players. An offer is 5 counts to give then 5 wanted (in
++// RESOURCE_ORDER); answers carry the offer plus the offerer's seat index, and
++// a confirmation the offer plus the partner's color.
++export type OfferTradeAction = [Color, "OFFER_TRADE", number[]];
++export type AcceptTradeAction = [Color, "ACCEPT_TRADE", number[]];
++export type RejectTradeAction = [Color, "REJECT_TRADE", number[]];
++export type ConfirmTradeAction = [Color, "CONFIRM_TRADE", (number | Color)[]];
++export type CancelTradeAction = [Color, "CANCEL_TRADE", null];
+ 
+ export type GameAction =
+   | RollGameAction
+@@ -64,6 +77,11 @@ export type GameAction =
+   | PlayYearOfPlentyAction
+   | MoveRobberAction
+   | MaritimeTradeAction
++  | OfferTradeAction
++  | AcceptTradeAction
++  | RejectTradeAction
++  | ConfirmTradeAction
++  | CancelTradeAction
+   | EndTurnAction;
+ 
+ export type PlayerState = any;
+@@ -156,6 +174,10 @@ export type GameState = {
+   current_turn_index: number;
+   resource_freqdeck: number[];
+   development_listdeck: Record<string, number>;
++  // The offer under way: 5 to give, 5 wanted, the offerer's seat index.
++  is_resolving_trade: boolean;
++  current_trade: number[];
++  acceptees: boolean[];
+ };
+ const DIRECTIONS = [
+   "NORTH",
 diff --git a/ui/src/utils/promptUtils.test.ts b/ui/src/utils/promptUtils.test.ts
-index 52ad87d..08d618c 100644
+index 52ad87d..d484b5f 100644
 --- a/ui/src/utils/promptUtils.test.ts
 +++ b/ui/src/utils/promptUtils.test.ts
-@@ -267,7 +267,7 @@ describe("humanizeAction", () => {
+@@ -168,6 +168,34 @@ describe("humanizeAction", () => {
+     ],
+   } as unknown as GameState;
+ 
++  test("trades between players", () => {
++    const offer = [1, 0, 2, 0, 0, 0, 0, 0, 0, 1];
++    expect(
++      humanizeActionRecord(baseGameState, [["RED", "OFFER_TRADE", offer], null])
++    ).toBe("RED OFFERED 1 WOOD + 2 SHEEP FOR 1 ORE");
++    expect(
++      humanizeActionRecord(baseGameState, [
++        ["WHITE", "ACCEPT_TRADE", [...offer, 0]],
++        null,
++      ])
++    ).toBe("YOU ACCEPTED THE OFFER");
++    expect(
++      humanizeActionRecord(baseGameState, [
++        ["BLUE", "REJECT_TRADE", [...offer, 0]],
++        null,
++      ])
++    ).toBe("BLUE DECLINED THE OFFER");
++    expect(
++      humanizeActionRecord(baseGameState, [
++        ["RED", "CONFIRM_TRADE", [...offer, "WHITE"]],
++        null,
++      ])
++    ).toBe("RED TRADED 1 WOOD + 2 SHEEP FOR 1 ORE WITH YOU");
++    expect(
++      humanizeActionRecord(baseGameState, [["RED", "CANCEL_TRADE", null], null])
++    ).toBe("RED CALLED OFF THE TRADE");
++  });
++
+   test("ROLL action", () => {
+     expect(
+       humanizeActionRecord(baseGameState, [
+@@ -267,7 +295,7 @@ describe("humanizeAction", () => {
        "BRICK",
      ];
      expect(humanizeActionRecord(baseGameState, actionRecord)).toBe(
@@ -462,7 +1107,7 @@ index 52ad87d..08d618c 100644
      );
    });
  
-@@ -277,7 +277,7 @@ describe("humanizeAction", () => {
+@@ -277,7 +305,7 @@ describe("humanizeAction", () => {
        null,
      ];
      expect(humanizeActionRecord(baseGameState, actionRecord)).toBe(
@@ -472,18 +1117,46 @@ index 52ad87d..08d618c 100644
    });
  
 diff --git a/ui/src/utils/promptUtils.ts b/ui/src/utils/promptUtils.ts
-index bb7bbd5..c0ccb72 100644
+index bb7bbd5..c3f3bc7 100644
 --- a/ui/src/utils/promptUtils.ts
 +++ b/ui/src/utils/promptUtils.ts
-@@ -8,6 +8,7 @@ import type {
+@@ -8,9 +8,26 @@ import type {
    PlayYearOfPlentyAction,
    MoveRobberAction,
    ResourceCard,
 +  Color,
++  ConfirmTradeAction,
  } from "./api.types";
  import type { GameState } from "./api.types";
  
-@@ -76,9 +77,14 @@ export function humanizeActionRecord(
++export const RESOURCE_ORDER: ResourceCard[] = [
++  "WOOD",
++  "BRICK",
++  "SHEEP",
++  "WHEAT",
++  "ORE",
++];
++
++/** "1 WOOD + 2 SHEEP" for counts in RESOURCE_ORDER. */
++export function tradeBundle(counts: number[]): string {
++  return RESOURCE_ORDER.flatMap((r, i) =>
++    counts[i] ? [`${counts[i]} ${r}`] : [],
++  ).join(" + ");
++}
++
+ export function humanizeActionRecord(
+   gameState: GameState,
+   actionRecord: GameActionRecord,
+@@ -18,6 +35,8 @@ export function humanizeActionRecord(
+   const botColors = gameState.bot_colors;
+   const action = actionRecord[0];
+   const player = botColors.includes(action[0]) ? "BOT" : "YOU";
++  // Trades involve several players, so they are named by color.
++  const name = (color: Color) => (botColors.includes(color) ? color : "YOU");
+   switch (actionRecord[0][1]) {
+     case "ROLL": {
+       const action = actionRecord[1] as [number, number];
+@@ -76,14 +95,35 @@ export function humanizeActionRecord(
        const action = actionRecord[0] as MoveRobberAction;
        const tile = findTileByCoordinate(gameState, action[2][0]);
        const tileString = getTileString(tile);
@@ -499,6 +1172,27 @@ index bb7bbd5..c0ccb72 100644
      }
      case "MARITIME_TRADE": {
        const label = humanizeTradeAction(action as MaritimeTradeAction);
+       return `${player} TRADED ${label}`;
+     }
++    case "OFFER_TRADE": {
++      const value = action[2] as number[];
++      return `${name(action[0])} OFFERED ${tradeBundle(value.slice(0, 5))} FOR ${tradeBundle(value.slice(5, 10))}`;
++    }
++    case "ACCEPT_TRADE":
++      return `${name(action[0])} ACCEPTED THE OFFER`;
++    case "REJECT_TRADE":
++      return `${name(action[0])} DECLINED THE OFFER`;
++    case "CONFIRM_TRADE": {
++      const value = (action as ConfirmTradeAction)[2];
++      const give = tradeBundle(value.slice(0, 5) as number[]);
++      const get = tradeBundle(value.slice(5, 10) as number[]);
++      return `${name(action[0])} TRADED ${give} FOR ${get} WITH ${name(value[10] as Color)}`;
++    }
++    case "CANCEL_TRADE":
++      return `${name(action[0])} CALLED OFF THE TRADE`;
+     case "END_TURN":
+       return `${player} ENDED TURN`;
+     default:
 diff --git a/ui/src/variables.scss b/ui/src/variables.scss
 index e4eeaff..d49666b 100644
 --- a/ui/src/variables.scss
