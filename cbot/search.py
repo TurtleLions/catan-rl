@@ -162,6 +162,7 @@ class NNSearchPlayer(Player):
     def decide(self, game, playable_actions):
         self.last_value = None
         self.last_scores = None
+        self.last_vec = None  # set only by a search of this decision
         if len(playable_actions) == 1 and not (self.trade and trade.offers(game, self.color)):
             return playable_actions[0]
         if self.fair:
@@ -305,8 +306,13 @@ class NNSearchPlayer(Player):
                     _ROLLOUT_POLICY[c] = ValueFunctionPlayer(c)
                 g.execute(_ROLLOUT_POLICY[c].decide(g, g.playable_actions), validate_action=False)
             finals.append(g)
-        vals = self._eval(finals)[:, self._me(game)]
-        return actions[int(np.argmax(vals))]
+        vecs = self._eval(finals)
+        me = self._me(game)
+        i = int(np.argmax(vecs[:, me]))
+        self.last_vec = vecs[i]
+        self.last_value = float(vecs[i, me])
+        self.last_scores = [(a, float(v)) for a, v in zip(actions, vecs[:, me])]
+        return actions[i]
 
     def _base_shortlist(self, game, k=None):
         fn = base_fn()
