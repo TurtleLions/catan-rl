@@ -3,8 +3,9 @@
     python -m cbot.train_policy --data data/p0 --out models/P0.npz
 
 Each recorded decision gives the search's value of every legal move for the
-mover. The target is softmax(value / temp) over the legal moves; the loss is
-cross-entropy with illegal moves masked out. Validation is on the last games
+mover. The target is softmax(value / temp) over the legal moves, or, where a
+tree search (cbot.mcts) made the decision, its share of the visits, as in
+AlphaZero; the loss is cross-entropy with illegal moves masked out. Validation is on the last games
 (whole games, so no position is in both sets) and reports how often the
 search's best move is among the policy's top 1-4 moves, the number that
 matters for pruning.
@@ -38,8 +39,18 @@ def load(dirs, temp):
         mask = np.isfinite(vals)
         z = (vals - vals.max(1, keepdims=True)) / temp
         t = np.where(mask, np.exp(z), 0.0)
+        t /= t.sum(1, keepdims=True)
+        if "pn" in d.files and (d["pn"] >= 0).any():
+            pn = d["pn"]
+            visits = np.zeros((len(rows), policy.SIZE), dtype=np.float32)
+            visits[inv, pa] = np.maximum(pn, 0)
+            tot = visits.sum(1, keepdims=True)
+            searched = np.zeros(len(rows), bool)
+            searched[inv[pn >= 0]] = True
+            searched &= tot[:, 0] > 0
+            t[searched] = visits[searched] / tot[searched]
         X.append(d["X"][rows])
-        T.append((t / t.sum(1, keepdims=True)).astype(np.float32))
+        T.append(t.astype(np.float32))
         M.append(mask)
         G.append(d["g"][rows])
     return np.concatenate(X), np.concatenate(T), np.concatenate(M), np.concatenate(G)

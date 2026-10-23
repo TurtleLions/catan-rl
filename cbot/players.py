@@ -7,6 +7,7 @@ Specs:
     F                 ValueFunctionPlayer
     R / W             Random / WeightedRandom
     NN:path[:k=v,...] cbot.search.NNSearchPlayer with weights at path
+    MCTS:path[:k=v,...] cbot.mcts.MCTSPlayer (PUCT search) with weights at path
 """
 
 from catanatron.players.minimax import AlphaBetaPlayer
@@ -60,4 +61,8 @@ def make_player(spec, color):
         from cbot.search import NNSearchPlayer
 
         return NNSearchPlayer(color, parts[1], **_kv(parts[2:]))
+    if name == "MCTS":
+        from cbot.mcts import MCTSPlayer
+
+        return MCTSPlayer(color, parts[1], **_kv(parts[2:]))
     raise ValueError(spec)

@@ -181,18 +181,8 @@ class NNSearchPlayer(Player):
             return self._answer(game, playable_actions)
         if prompt == ActionPrompt.DECIDE_ACCEPTEES:
             return self._confirm(game, playable_actions)
-        leaves = []
-        tree = self._build(game, self.depth, leaves, root=True)
-        if leaves:
-            vals = self._eval(leaves)
-        else:
-            vals = np.zeros(0)
         me = self._me(game)
-        scored = [
-            (sum(p * self._value(n, vals) for n, p in outcomes), a)
-            for a, outcomes in tree[1]
-        ]
-        scored.sort(key=lambda x: -x[0][me])
+        scored = self._root_search(game)
         # last_vec: win probability per seat (game.state.colors order).
         self.last_vec = scored[0][0]
         self.last_value = float(self.last_vec[me])
@@ -208,6 +198,19 @@ class NNSearchPlayer(Player):
             if offer is not None:
                 return offer
         return scored[0][1]
+
+    def _root_search(self, game):
+        """(value vector, move) for every root move, the move to play first."""
+        leaves = []
+        tree = self._build(game, self.depth, leaves, root=True)
+        vals = self._eval(leaves) if leaves else np.zeros(0)
+        me = self._me(game)
+        scored = [
+            (sum(p * self._value(n, vals) for n, p in outcomes), a)
+            for a, outcomes in tree[1]
+        ]
+        scored.sort(key=lambda x: -x[0][me])
+        return scored
 
     def _search(self, games):
         """Win-probability vector of each position, searched as a root."""
@@ -339,10 +342,12 @@ class NNSearchPlayer(Player):
     def _me(self, game):
         return game.state.colors.index(self.color)
 
-    def _eval(self, games):
+    def _eval(self, games, X=None):
         """Win probability per seat, shape (len(games), players), in
-        game.state.colors order."""
-        X = np.stack([feats.encode(g, self.color) for g in games])
+        game.state.colors order. X: the games' features for this seat, if
+        already encoded."""
+        if X is None:
+            X = np.stack([feats.encode(g, self.color) for g in games])
         vals = self.net(X)
         n = len(games[0].state.colors)
         me = self._me(games[0])

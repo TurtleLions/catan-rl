@@ -6,6 +6,7 @@ search bots read the full state; this encoder does not.)
 """
 
 import functools
+import operator
 
 import numpy as np
 
@@ -79,6 +80,11 @@ def feature_names(n=2):
     return tuple(sorted(_sample(g, Color.RED).keys()))
 
 
+@functools.lru_cache(maxsize=4)
+def _getter(n):
+    return operator.itemgetter(*feature_names(n))
+
+
 NUM_OPP = len(RESOURCES)
 
 
@@ -99,8 +105,7 @@ def encode(game, p0):
     Multiplayer layout: just sorted feature_names(n) (compact features only)."""
     n = len(game.state.colors)
     s = _sample(game, p0)
-    names = feature_names(n)
-    base = np.fromiter((float(s[k]) for k in names), dtype=np.float32, count=len(names))
+    base = np.array(_getter(n)(s), dtype=np.float32)
     if n > 2:
         return base
     return np.concatenate([base, _node_pips(game.state.board.map), _opp_hand(game, p0)])

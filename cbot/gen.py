@@ -12,7 +12,8 @@ relative. Optional epsilon-random moves add diversity.
 Policy targets: where a search bot moved at a recorded state, the shard also
 holds the search's value of every legal move (for the mover) as triples
 (pr = row of the mover's own features, pa = move number in cbot.policy,
-pv = value).
+pv = value), and for tree-search bots (cbot.mcts) the move's visit count
+(pn; -1 for other bots).
 
 Resumable: rerunning with the same arguments skips games whose seeds are
 already in the output's shards (shards are written atomically).
@@ -54,7 +55,7 @@ def play_record(args):
     colors = game.state.colors  # seat order
     n = len(colors)
     rows, who, sv = [], [], []
-    pr, pa, pv = [], [], []
+    pr, pa, pv, pn = [], [], [], []
 
     def decide(player, g, actions):
         rec = rng.random() < p_record
@@ -72,12 +73,14 @@ def play_record(args):
             from cbot import policy
 
             row = len(rows) - n + colors.index(mover)
+            visits = dict(getattr(player, "last_visits", None) or ())
             for a, v in scores:
                 i = policy.index(a)
                 if i >= 0:
                     pr.append(row)
                     pa.append(i)
                     pv.append(v)
+                    pn.append(visits.get(a, -1))
         vec = getattr(player, "last_vec", None)
         if rec and vec is not None:
             # Per-seat search values, rotated so each row is relative to its player.
@@ -96,7 +99,8 @@ def play_record(args):
         y, V = (who == w).astype(np.int8), V[:, 0]
     else:
         y = ((w - who) % n).astype(np.int8)
-    P = (np.array(pr, dtype=np.int32), np.array(pa, dtype=np.int16), np.array(pv, dtype=np.float32))
+    P = (np.array(pr, dtype=np.int32), np.array(pa, dtype=np.int16), np.array(pv, dtype=np.float32),
+         np.array(pn, dtype=np.int32))
     return X, y, V, np.full(len(y), seed, dtype=np.int64), P
 
 
@@ -169,6 +173,7 @@ def main():
                 pr=np.concatenate([p[0] + o for p, o in zip(ps, offs)]),
                 pa=np.concatenate([p[1] for p in ps]),
                 pv=np.concatenate([p[2] for p in ps]),
+                pn=np.concatenate([p[3] for p in ps]),
             )
             os.replace(path + ".tmp.npz", path)
             shard += 1
