@@ -128,7 +128,13 @@ def main():
     ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--searched-only", action="store_true",
                     help="drop states without a search value (for --lam 0)")
+    ap.add_argument("--arch", default="mlp", choices=("mlp", "board"),
+                    help="board: message passing over the map's corners (cbot.board)")
+    ap.add_argument("--node-hidden", type=int, default=32)
+    ap.add_argument("--rounds", type=int, default=3)
     args = ap.parse_args()
+    if args.arch == "board":
+        args.cols = "board"
     torch.set_num_threads(args.threads)
     hidden = [int(h) for h in args.hidden.split(",")]
 
@@ -154,12 +160,20 @@ def main():
                                   searched_only=args.searched_only)
     assert (ytr.ndim == 2) == multi, "--players does not match the data"
     print(f"loaded train {Xtr.shape} val {Xva.shape} pos {ytr.mean(0)} in {time.time() - t0:.0f}s", flush=True)
-    mean = Xtr[:200000].astype(np.float32).mean(0)
-    std = Xtr[:200000].astype(np.float32).std(0) + 1e-3
+    if args.arch == "board":
+        from cbot import board
 
-    Xva_t = torch.from_numpy((Xva.astype(np.float32) - mean) / std)
+        # The board net normalizes its own inputs; it takes raw vectors.
+        model = board.build(*board.node_stats(Xtr), hidden=args.node_hidden, rounds=args.rounds,
+                            head=hidden, dropout=args.dropout)
+        mean, std = np.zeros(Xtr.shape[1], np.float32), np.ones(Xtr.shape[1], np.float32)
+    else:
+        mean = Xtr[:200000].astype(np.float32).mean(0)
+        std = Xtr[:200000].astype(np.float32).std(0) + 1e-3
+        model = build(Xtr.shape[1], hidden, args.dropout, out=args.players if multi else 1)
+    print(f"{sum(p.numel() for p in model.parameters())} parameters", flush=True)
+
     yva_t = torch.from_numpy(yva)
-    model = build(Xtr.shape[1], hidden, args.dropout, out=args.players if multi else 1)
     if args.init:
         model.load_state_dict(torch.load(args.init))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -181,10 +195,13 @@ def main():
         def accf(logits, t):
             return ((logits.squeeze(1) > 0).float() == t).float().mean()
 
-    def evaluate():
+    def evaluate(chunk=65536):
         model.eval()
         with torch.no_grad():
-            lv = model(Xva_t)
+            lv = torch.cat([
+                model((torch.from_numpy(Xva[i : i + chunk].astype(np.float32)) - mean_t) / std_t)
+                for i in range(0, len(Xva), chunk)
+            ])
             vloss = lossf(lv, yva_t).item()
             acc = accf(lv, yva_t).item()
         model.train()
@@ -222,7 +239,10 @@ def main():
     print(f"best val {best[0]:.4f}", flush=True)
 
     torch.save(model.state_dict(), args.out.replace(".npz", ".pt"))
-    export(model, mean, std, args.out, hidden, cols, use_derived, args.players)
+    if args.arch == "board":
+        board.export(model, args.out)
+    else:
+        export(model, mean, std, args.out, hidden, cols, use_derived, args.players)
     print("saved", args.out)
 
 

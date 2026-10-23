@@ -79,9 +79,14 @@ def get_net(path):
     """`a.npz` or an ensemble `a.npz+b.npz` (mean of win probabilities)."""
     if path not in _NETS:
         parts = path.split("+")
-        _NETS[path] = (
-            ValueNet(path) if len(parts) == 1 else Ensemble([get_net(p) for p in parts])
-        )
+        if len(parts) > 1:
+            _NETS[path] = Ensemble([get_net(p) for p in parts])
+        elif "kind" in np.load(path).files:
+            from cbot.board import BoardNet
+
+            _NETS[path] = BoardNet(path)
+        else:
+            _NETS[path] = ValueNet(path)
     return _NETS[path]
 
 
