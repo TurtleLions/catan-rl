@@ -19,3 +19,6 @@ tools/
 jobs/
 runs/web.sqlite
 runs/web_server.log
+
+# Native engine build (cbot/engine/build.sh)
+cbot/_engine*.so

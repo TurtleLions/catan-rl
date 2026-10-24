@@ -8,6 +8,7 @@ Specs:
     R / W             Random / WeightedRandom
     NN:path[:k=v,...] cbot.search.NNSearchPlayer with weights at path
     MCTS:path[:k=v,...] cbot.mcts.MCTSPlayer (PUCT search) with weights at path
+    NMCTS:path[:k=v,...] the same search run by the native engine (cbot.native, 1v1)
 """
 
 from catanatron.players.minimax import AlphaBetaPlayer
@@ -65,4 +66,8 @@ def make_player(spec, color):
         from cbot.mcts import MCTSPlayer
 
         return MCTSPlayer(color, parts[1], **_kv(parts[2:]))
+    if name == "NMCTS":
+        from cbot.native import NativeMCTSPlayer
+
+        return NativeMCTSPlayer(color, parts[1], **_kv(parts[2:]))
     raise ValueError(spec)
