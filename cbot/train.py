@@ -19,7 +19,9 @@ import torch.nn as nn
 
 def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None, searched_only=False):
     files = sorted(f for d in dirs for f in glob.glob(f"{d}/*.npz") if not f.endswith(".tmp.npz"))
-    Xs, ys = [], []
+    # Targets first, then the features into one preallocated float16 matrix:
+    # concatenating per-shard parts would need twice the memory at the end.
+    keeps, ys = [], []
     players = 2
     for f in files:
         d = np.load(f)
@@ -28,11 +30,11 @@ def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None, searched_only=False
         if searched_only:
             # Only states the generator searched (both seats' rows have a value).
             if v is None:
+                keeps.append(None)
                 continue
             keep = ~np.isnan(v if v.ndim == 1 else v[:, 0])
             v = v[keep]
-        X = d["X"][keep]
-        Xs.append(X if project is None else project(X))
+        keeps.append(keep)
         if v is not None and v.ndim == 2:
             # Multiplayer: y = winner seat relative to this row's player.
             players = v.shape[1]
@@ -46,8 +48,18 @@ def load(dirs, val_frac=0.05, seed=0, lam=1.0, project=None, searched_only=False
                 # Soft target: blend outcome with the generator's search value.
                 y = np.where(np.isnan(v), y, lam * y + (1 - lam) * v).astype(np.float32)
         ys.append(y)
-    X = np.concatenate(Xs)
     y = np.concatenate(ys).astype(np.float32)
+    X, i = None, 0
+    for f, keep in zip(files, keeps):
+        if keep is None:
+            continue
+        part = np.load(f)["X"][keep]
+        part = part if project is None else project(part)
+        if X is None:
+            X = np.empty((len(y), part.shape[1]), np.float16)
+        X[i : i + len(part)] = part
+        i += len(part)
+    assert i == len(y)
     # Each state is stored once per player in consecutive rows; split off the
     # tail in whole blocks so validation states are not mirrored in training.
     n = len(X)
