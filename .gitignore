@@ -4,7 +4,7 @@ data/
 __pycache__/
 *.pyc
 # Keep only released numpy weights: the 1v1 final ensemble (V2*, FINAL.txt), 4-player round 0 (M0*)
-# and the 4-player bot the web server plays (A20big*).
+# the 4-player bot the web server plays (A20big*) and its 1v1 bot (N1 + policy P1, BOT1V1.txt).
 models/*
 !models/V2a_s*.npz
 !models/V2b_s*.npz
@@ -14,6 +14,8 @@ models/*
 !models/M0e_s*.npz
 !models/A20biga_s*.npz
 !models/A20bigb_s*.npz
+!models/N1_s*.npz
+!models/P1.npz
 .venv-pypy/
 tools/
 jobs/

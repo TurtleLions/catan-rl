@@ -36,29 +36,41 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Cbot(Player):
-    """Search with a learned value net (A20big ensemble: 70.0% vs three AlphaBetas at depth 2,
-    hidden cards guessed; depth 3 gained A20 about two points at five times the time)."""
+    """Search with a learned value net. Against three players: the A20big
+    ensemble (70.0% vs three AlphaBetas at depth 2, hidden cards guessed; depth 3
+    gained A20 about two points at five times the time). One on one: native tree
+    search with the N1 committee and policy P1 (90.1% vs AlphaBeta)."""
 
     LABEL = "CBOT"
 
     @dataclasses.dataclass(frozen=True)
     class Params:
         model: str = "A20big"  # models/<model>.txt holds the NN spec
+        model1v1: str = "BOT1V1"  # the same, for two-player games
         depth: int = 3  # about 250 ms a decision, a few seconds at most
         trade: int = 1  # offer trades to other players (answering is always on)
 
     def __init__(self, color, params=None):
         super().__init__(color, params)
-        with open(os.path.join(ROOT, "models", f"{self.params.model}.txt")) as f:
+        self.bot = None  # built at the first decision, when the number of players is known
+
+    def _make(self, players):
+        name = self.params.model1v1 if players == 2 else self.params.model
+        with open(os.path.join(ROOT, "models", f"{name}.txt")) as f:
             spec = f.read().strip()
-        if not spec.startswith("NN:"):  # a bare list of nets, e.g. models/M0.txt
+        if spec.split(":")[0] not in ("NN", "MCTS", "NMCTS"):  # a bare list of nets, e.g. models/M0.txt
             spec = f"NN:{spec}:initf=2"
         spec = spec.replace("models/", os.path.join(ROOT, "models") + "/")
-        spec += f":depth={self.params.depth}"
-        spec += f":trade={self.params.trade}"
-        self.bot = make_player(spec, color)
+        if spec.startswith("NN:"):
+            spec += f":depth={self.params.depth}:trade={self.params.trade}"
+        try:
+            return make_player(spec, self.color)
+        except ImportError:  # native engine not built (cbot/engine/build.sh): same search in Python
+            return make_player(spec.replace("NMCTS:", "MCTS:", 1), self.color)
 
     def decide(self, game, playable_actions):
+        if self.bot is None:
+            self.bot = self._make(len(game.state.colors))
         return self.bot.decide(game, playable_actions)
 
 

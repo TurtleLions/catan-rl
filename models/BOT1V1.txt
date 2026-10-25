@@ -1,0 +1,1 @@
+NMCTS:models/N1_s1.npz+models/N1_s2.npz+models/N1_s3.npz+models/N1_s4.npz+models/N1_s5.npz:initf=2:sims=400:cpuct=0.3:policy=models/P1.npz
