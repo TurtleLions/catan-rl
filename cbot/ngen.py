@@ -8,7 +8,8 @@ search (cbot/engine), in shards like cbot.gen writes.
 Games run in C++ threads (no Python per move), each on its own random map with
 seed seed0 + i. Shards hold X (float16), y, v, g and the policy triples pr,
 pa, pv, pn, as cbot.gen's do; games that hit the turn limit are dropped.
-Resumable: rerunning skips seeds already in the output's shards.
+Resumable: rerunning skips seeds already in the output's shards. --minutes
+stops early.
 """
 
 import argparse
@@ -42,6 +43,7 @@ def main():
     ap.add_argument("--eps", type=float, default=0.0)
     ap.add_argument("--chunk", type=int, default=0, help="games per call (default 4 per thread)")
     ap.add_argument("--shard-games", type=int, default=2000)
+    ap.add_argument("--minutes", type=float, default=0, help="stop starting new games after this long")
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
@@ -78,6 +80,9 @@ def main():
         parts, ngames = [], 0
 
     for i in range(0, len(seeds), chunk):
+        if a.minutes and time.time() - t0 > 60 * a.minutes:
+            print(f"time limit: stopping at {done} games", flush=True)
+            break
         batch = seeds[i : i + chunk]
         r = native._engine.selfplay(nets, prm, batch, a.threads, a.p_record, a.eps)
         r["X"] = r["X"].astype(np.float16)
