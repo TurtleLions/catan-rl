@@ -27,7 +27,9 @@ unless DATABASE_URL is set.
 import dataclasses
 import os
 
+from catanatron.models.enums import ActionPrompt, ActionType
 from catanatron.models.player import Player
+from catanatron.players.minimax import AlphaBetaPlayer
 from catanatron.registry import REGISTRY
 
 from cbot.players import make_player
@@ -36,17 +38,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Cbot(Player):
-    """Search with a learned value net. Against three players: the A20big
-    ensemble (70.0% vs three AlphaBetas at depth 2, hidden cards guessed; depth 3
-    gained A20 about two points at five times the time). One on one: native tree
-    search with the N1 committee and policy P1 (90.1% vs AlphaBeta)."""
+    """Native tree search with learned value nets and a policy, hidden cards
+    guessed. Against three players: the Q1 committee and policy P4a (76.6% vs
+    three AlphaBetas; the A20big expectimax it replaces 70.2%). One on one: the
+    N1 committee and policy P1 (90.1% vs AlphaBeta). Against two players there
+    is no trained bot yet: Catanatron's AlphaBeta plays, declining trades."""
 
     LABEL = "CBOT"
 
     @dataclasses.dataclass(frozen=True)
     class Params:
-        model: str = "A20big"  # models/<model>.txt holds the NN spec
+        model: str = "BOT4P"  # models/<model>.txt holds the bot spec
         model1v1: str = "BOT1V1"  # the same, for two-player games
+        model3: str = "BOT3P"  # and for three-player games
         depth: int = 3  # about 250 ms a decision, a few seconds at most
         trade: int = 1  # offer trades to other players (answering is always on)
 
@@ -55,10 +59,10 @@ class Cbot(Player):
         self.bot = None  # built at the first decision, when the number of players is known
 
     def _make(self, players):
-        name = self.params.model1v1 if players == 2 else self.params.model
+        name = {2: self.params.model1v1, 3: self.params.model3}.get(players, self.params.model)
         with open(os.path.join(ROOT, "models", f"{name}.txt")) as f:
             spec = f.read().strip()
-        if spec.split(":")[0] not in ("NN", "MCTS", "NMCTS"):  # a bare list of nets, e.g. models/M0.txt
+        if spec.split(":")[0] not in ("NN", "MCTS", "NMCTS", "AB"):  # a bare list of nets, e.g. models/M0.txt
             spec = f"NN:{spec}:initf=2"
         spec = spec.replace("models/", os.path.join(ROOT, "models") + "/")
         if spec.startswith("NN:"):
@@ -71,6 +75,9 @@ class Cbot(Player):
     def decide(self, game, playable_actions):
         if self.bot is None:
             self.bot = self._make(len(game.state.colors))
+        if isinstance(self.bot, AlphaBetaPlayer) and game.state.current_prompt in (
+            ActionPrompt.DECIDE_TRADE, ActionPrompt.DECIDE_ACCEPTEES):  # AlphaBeta cannot weigh trades
+            return next(a for a in playable_actions if a.action_type in (ActionType.REJECT_TRADE, ActionType.CANCEL_TRADE))
         return self.bot.decide(game, playable_actions)
 
 
