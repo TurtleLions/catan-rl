@@ -39,13 +39,14 @@ log "generator: $bv + P4a, cpuct $bc ($bw/1000 vs 3 AB in q0)"
 printf '%s\n' "$bv" models/P4a.npz "$bc" > runs/q_best.txt
 
 # Self-play time g from the time left R: training scales with the rows (q0's
-# 50k games plus q1's r*g), so R = g + Tt*(1 + r*g/50000) + 5 arenas + 20 min.
+# 50k games plus q1's r*g; doubled, as q0+q1 may not fit five value trainers
+# at once), so R = g + 2Tt*(1 + r*g/50000) + 5 arenas + 20 min.
 end=$(date -d "${DEADLINE:-07:00}" +%s)
 read -r _ Tt < <(grep train runs/q0_times.txt)
 read -r _ Ta < <(grep arena runs/q0_times.txt)
 r=$(awk '/games\/h/{x=$4} END{print x / 3600 * 0.85}' runs/gen_q0.log)  # games/s; a policy slows it a little
 R=$(( end - $(date +%s) - 1200 ))
-g=$(awk -v R=$R -v T=$Tt -v A=$Ta -v r=$r 'BEGIN{print int((R - T - 5 * A) / (1 + T * r / 50000))}')
+g=$(awk -v R=$R -v T=$(( 2 * Tt )) -v A=$Ta -v r=$r 'BEGIN{print int((R - T - 5 * A) / (1 + T * r / 50000))}')
 log "time left ${R}s; q0 training ${Tt}s, arena ${Ta}s; self-play ${g}s at ${r} games/s"
 [ "$g" -ge 1800 ] || { log "under 30 min of self-play would fit, stopping"; exit 1; }
 
@@ -64,8 +65,8 @@ r = d = 0
 for f in glob.glob('data/q0/shard*.npz') + glob.glob('data/q1/shard*.npz'):
     z = np.load(f); r += len(z['y']); d += len(np.unique(z['pr']))
 print(r, d)")
-need_v=$(awk -v n=$rows -v f=${VMEM:-1.3} 'BEGIN{print int(n * 179 * 2 * f / 1e9) + 2}')
-need_p=$(awk -v n=$dec -v f=${PMEM:-2.5} 'BEGIN{print int(n * 351 * 4 * f / 1e9) + 3}')
+need_v=$(awk -v n=$rows -v f=${VMEM:-1.1} 'BEGIN{print int(n * 179 * 2 * f / 1e9) + 2}')
+need_p=$(awk -v n=$dec -v f=${PMEM:-3.0} 'BEGIN{print int(n * 351 * 4 * f / 1e9) + 3}')
 log "training P4b and Q1: $rows rows, $dec decisions; $need_v GB per value trainer, $need_p GB for the policy"
 fit() { while [ "$(memfree)" -lt "$1" ] && [ "$(jobs -rp | wc -l)" -gt 0 ]; do wait -n; done; wait_mem "$1"; }
 if [ ! -f models/P4b.npz ]; then
