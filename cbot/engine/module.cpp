@@ -12,15 +12,15 @@ namespace py = pybind11;
 using namespace ce;
 
 namespace ce {
-int LAYOUT[DIM];  // canonical feature k goes to LAYOUT[k] (cbot.feats order)
+int LAYOUT[MAXP + 1][DIM];  // n players: canonical feature k goes to LAYOUT[n][k] (cbot.feats order)
 }
 
 namespace {
 
-bool HAVE_LAYOUT = false;
+bool HAVE_LAYOUT[MAXP + 1] = {};
 
-void need_layout() {
-  if (!HAVE_LAYOUT) throw std::runtime_error("call set_layout first (import cbot.native)");
+void need_layout(int n) {
+  if (n < 2 || n > MAXP || !HAVE_LAYOUT[n]) throw std::runtime_error("call set_layout first (import cbot.native)");
 }
 
 struct PyGame {
@@ -59,7 +59,8 @@ py::dict to_dict(const PyGame& g) {
   m["res"] = vec(g.map->res, TILES), m["num"] = vec(g.map->num, TILES), m["port"] = vec(g.map->port, PORTS);
   d["map"] = m;
   py::list players;
-  for (const Player& q : s.p) {
+  for (int i = 0; i < s.np; i++) {
+    const Player& q = s.p[i];
     py::dict p;
     p["vp"] = q.vp, p["avp"] = q.avp, p["roads_av"] = q.roads_av, p["setts_av"] = q.setts_av,
     p["cities_av"] = q.cities_av, p["has_road"] = q.has_road, p["has_army"] = q.has_army,
@@ -72,7 +73,7 @@ py::dict to_dict(const PyGame& g) {
   d["players"] = players;
   d["bowner"] = vec(s.bowner, NODES), d["btype"] = vec(s.btype, NODES), d["road"] = vec(s.road, EDGES);
   py::list comps;
-  for (int c = 0; c < NP; c++) {
+  for (int c = 0; c < s.np; c++) {
     py::list cs;
     for (int i = 0; i < s.ncomp[c]; i++) cs.append(bits(s.comp[c][i]));
     comps.append(cs);
@@ -86,7 +87,7 @@ py::dict to_dict(const PyGame& g) {
   d["bank"] = vec(s.bank, 5), d["deck"] = vec(s.deck, s.ndeck);
   d["num_turns"] = s.num_turns, d["cur"] = s.cur, d["turn"] = s.turn, d["prompt"] = s.prompt;
   d["initial"] = s.initial, d["discarding"] = s.discarding, d["moving_knight"] = s.moving_knight;
-  d["road_building"] = s.road_building, d["free_roads"] = s.free_roads, d["discard"] = vec(s.discard, NP);
+  d["road_building"] = s.road_building, d["free_roads"] = s.free_roads, d["discard"] = vec(s.discard, s.np);
   d["vps_to_win"] = s.vps_to_win, d["discard_limit"] = s.discard_limit;
   return d;
 }
@@ -102,7 +103,9 @@ PyGame from_dict(const py::dict& d, uint64_t seed) {
   std::memset(&s, 0, sizeof(s));
   s.map = g.map.get();
   py::list players = d["players"];
-  for (int i = 0; i < NP; i++) {
+  if (players.size() < 2 || players.size() > MAXP) throw std::runtime_error("2 to 4 players");
+  s.np = int8_t(players.size());
+  for (int i = 0; i < s.np; i++) {
     py::dict p = players[i];
     Player& q = s.p[i];
     q.vp = p["vp"].cast<int>(), q.avp = p["avp"].cast<int>(), q.roads_av = p["roads_av"].cast<int>();
@@ -120,7 +123,7 @@ PyGame from_dict(const py::dict& d, uint64_t seed) {
   }
   fill(s.bowner, d["bowner"], NODES), fill(s.btype, d["btype"], NODES), fill(s.road, d["road"], EDGES);
   py::list comps = d["comps"];
-  for (int c = 0; c < NP; c++) {
+  for (int c = 0; c < s.np; c++) {
     py::list cs = comps[c];
     s.ncomp[c] = 0;
     for (auto h : cs) s.comp_append(c, mask(h.cast<std::vector<int>>()));
@@ -143,14 +146,14 @@ PyGame from_dict(const py::dict& d, uint64_t seed) {
   s.initial = d["initial"].cast<bool>(), s.discarding = d["discarding"].cast<bool>();
   s.moving_knight = d["moving_knight"].cast<bool>(), s.road_building = d["road_building"].cast<bool>();
   s.free_roads = d["free_roads"].cast<int>();
-  fill(s.discard, d["discard"], NP);
+  fill(s.discard, d["discard"], s.np);
   s.vps_to_win = d["vps_to_win"].cast<int>(), s.discard_limit = d["discard_limit"].cast<int>();
   return g;
 }
 
 py::array_t<float> py_encode(const PyGame& g, int p0) {
-  need_layout();
-  py::array_t<float> out(DIM);
+  need_layout(g.s.np);
+  py::array_t<float> out(dim(g.s.np));
   ce::encode(g.s, p0, out.mutable_data());
   return out;
 }
@@ -206,15 +209,17 @@ struct PySearcher {
 py::dict decision_dict(const Decision& d) {
   py::dict o;
   o["move"] = d.move, o["searched"] = d.searched, o["moves"] = d.moves, o["visits"] = d.visits, o["q"] = d.q;
-  o["vec"] = std::vector<double>(d.vec, d.vec + NP);
+  o["vec"] = std::vector<double>(d.vec, d.vec + MAXP);
   return o;
 }
 
 // Plays the games on `threads` threads; returns the finished games' records
-// stacked as cbot.gen shards hold them (X float32 here).
+// stacked as cbot.gen shards hold them (X float32 here): in 1v1 y = 1 if the
+// row's seat won and v its search value; with more players y = the winner's
+// seat counted from the row's seat and v the search values from it on.
 py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> seeds, int threads, double p_record,
-                  double eps) {
-  need_layout();
+                  double eps, int np) {
+  need_layout(np);
   Params prm = params_from(params);
   std::vector<GameRecord> out(seeds.size());
   {
@@ -226,7 +231,8 @@ py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> see
     for (int t = 0; t < threads; t++)
       pool.emplace_back([&] {
         try {
-          for (size_t i; (i = next++) < seeds.size();) out[i] = play_game(nets.nets.get(), prm, seeds[i], p_record, eps);
+          for (size_t i; (i = next++) < seeds.size();)
+            out[i] = play_game(nets.nets.get(), prm, seeds[i], np, p_record, eps);
         } catch (...) {
           std::lock_guard<std::mutex> lk(mu);
           fail = std::current_exception();
@@ -245,9 +251,10 @@ py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> see
     }
     rows += g.who.size(), prows += g.pr.size();
   }
-  py::array_t<float> X({rows, size_t(DIM)});
+  const size_t D = dim(np);
+  py::array_t<float> X({rows, D});
   py::array_t<int8_t> y(rows);
-  py::array_t<float> v(rows);
+  py::array_t<float> v = np == 2 ? py::array_t<float>(rows) : py::array_t<float>({rows, size_t(np)});
   py::array_t<int64_t> gs(rows);
   py::array_t<int32_t> pr(prows), pn(prows);
   py::array_t<int16_t> pa(prows);
@@ -255,7 +262,7 @@ py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> see
   size_t r = 0, q = 0;
   for (auto& g : out) {
     if (g.winner < 0) continue;
-    std::memcpy(X.mutable_data() + r * DIM, g.X.data(), g.X.size() * sizeof(float));
+    std::memcpy(X.mutable_data() + r * D, g.X.data(), g.X.size() * sizeof(float));
     for (size_t k = 0; k < g.pr.size(); k++, q++) {
       pr.mutable_data()[q] = int32_t(r + g.pr[k]);
       pa.mutable_data()[q] = int16_t(g.pa[k]);
@@ -263,8 +270,13 @@ py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> see
       pn.mutable_data()[q] = g.pn[k];
     }
     for (size_t k = 0; k < g.who.size(); k++, r++) {
-      y.mutable_data()[r] = int8_t(g.who[k] == g.winner);
-      v.mutable_data()[r] = g.v[k];
+      if (np == 2) {
+        y.mutable_data()[r] = int8_t(g.who[k] == g.winner);
+        v.mutable_data()[r] = g.v[k * 2];
+      } else {
+        y.mutable_data()[r] = int8_t((g.winner - g.who[k] + np) % np);
+        for (int j = 0; j < np; j++) v.mutable_data()[r * np + j] = g.v[k * np + j];
+      }
       gs.mutable_data()[r] = int64_t(g.seed);
     }
   }
@@ -277,24 +289,27 @@ py::dict selfplay(const PyNets& nets, py::dict params, std::vector<uint64_t> see
 }  // namespace
 
 PYBIND11_MODULE(_engine, m) {
-  m.doc() = "Native 1v1 Catan engine and tree search (cbot/engine).";
+  m.doc() = "Native Catan engine (2 to 4 players) and tree search (cbot/engine).";
   m.attr("DIM") = DIM;
   m.attr("NUM_ACTIONS") = NUM_ACTIONS;
-  m.def("set_layout", [](py::array_t<int> perm) {
-    if (perm.size() != DIM) throw std::runtime_error("layout must have DIM entries");
-    for (int k = 0; k < DIM; k++) LAYOUT[k] = perm.data()[k];
-    HAVE_LAYOUT = true;
+  m.attr("NUM_ACTIONS_1V1") = NUM_ACTIONS_1V1;
+  m.def("dim", [](int n) { return dim(n); });
+  m.def("set_layout", [](int n, py::array_t<int> perm) {
+    if (n < 2 || n > MAXP) throw std::runtime_error("2 to 4 players");
+    if (perm.size() != dim(n)) throw std::runtime_error("layout must have dim(n) entries");
+    for (int k = 0; k < dim(n); k++) LAYOUT[n][k] = perm.data()[k];
+    HAVE_LAYOUT[n] = true;
   });
 
   py::class_<PyGame>(m, "Game")
       .def_static("from_dict", &from_dict, py::arg("d"), py::arg("seed") = 1)
-      .def_static("new", [](uint64_t seed) {
+      .def_static("new", [](uint64_t seed, int players) {
         PyGame g;
         g.rng = Rng(seed);
         g.map = std::make_shared<Map>(Map::random(g.rng));
-        g.s = State::fresh(g.map.get(), g.rng);
+        g.s = State::fresh(g.map.get(), g.rng, players);
         return g;
-      })
+      }, py::arg("seed"), py::arg("players") = 2)
       .def("copy", &PyGame::copy)
       .def("to_dict", &to_dict)
       .def("legal", [](const PyGame& g) {
@@ -316,6 +331,7 @@ PYBIND11_MODULE(_engine, m) {
       .def("encode", &py_encode)
       .def("base_value", [](const PyGame& g, int c) { return g.s.base_value(c); })
       .def("winner", [](const PyGame& g) { return g.s.winner(); })
+      .def_property_readonly("players", [](const PyGame& g) { return int(g.s.np); })
       .def_property_readonly("cur", [](const PyGame& g) { return int(g.s.cur); })
       .def_property_readonly("num_turns", [](const PyGame& g) { return int(g.s.num_turns); })
       .def_property_readonly("prompt", [](const PyGame& g) { return int(g.s.prompt); })
@@ -330,16 +346,18 @@ PYBIND11_MODULE(_engine, m) {
              return n;
            }),
            py::arg("value"), py::arg("policy") = py::none())
-      .def("values", [](const PyNets& n, FArray X) {
+      .def("values", [](const PyNets& n, FArray X, int players) {
         int B = int(X.shape(0));
-        py::array_t<double> out(B);
-        n.nets->values(X.data(), B, out.mutable_data());
+        if (X.shape(1) != dim(players)) throw std::runtime_error("rows must have dim(players) features");
+        py::array_t<double> out({B, players});
+        n.nets->values(X.data(), B, players, out.mutable_data());
         return out;
-      })
+      }, py::arg("X"), py::arg("players") = 2)
       .def("policy", [](const PyNets& n, FArray X) {
         int B = int(X.shape(0));
-        py::array_t<float> out({B, NUM_ACTIONS});
-        n.nets->policy.forward(X.data(), B, out.mutable_data());
+        int K = n.nets->policy.out_dim();
+        py::array_t<float> out({B, K});
+        n.nets->policy.forward(X.data(), B, int(X.shape(1)), out.mutable_data());
         return out;
       });
 
@@ -352,7 +370,7 @@ PYBIND11_MODULE(_engine, m) {
            }),
            py::arg("nets"), py::arg("params"), py::arg("seed") = 1)
       .def("decide", [](PySearcher& s, const PyGame& g, int me) {
-        need_layout();
+        need_layout(g.s.np);
         Decision d;
         {
           py::gil_scoped_release nogil;
@@ -362,5 +380,5 @@ PYBIND11_MODULE(_engine, m) {
       });
 
   m.def("selfplay", &selfplay, py::arg("nets"), py::arg("params"), py::arg("seeds"), py::arg("threads"),
-        py::arg("p_record") = 1.0, py::arg("eps") = 0.0);
+        py::arg("p_record") = 1.0, py::arg("eps") = 0.0, py::arg("players") = 2);
 }

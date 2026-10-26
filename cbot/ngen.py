@@ -6,8 +6,11 @@ search (cbot/engine), in shards like cbot.gen writes.
         --search sims=400,cpuct=0.3,noise=0.25
 
 Games run in C++ threads (no Python per move), each on its own random map with
-seed seed0 + i. Shards hold X (float16), y, v, g and the policy triples pr,
-pa, pv, pn, as cbot.gen's do; games that hit the turn limit are dropped.
+seed seed0 + i, every seat played by the search (--players 2 to 4). Shards
+hold X (float16), y, v, g and the policy triples pr, pa, pv, pn, as cbot.gen's
+do (multiplayer: y the winner's seat and v the search values, both counted
+from the row's seat; pa in native numbers, cbot.native.index); games that
+hit the turn limit are dropped.
 Resumable: rerunning skips seeds already in the output's shards. --minutes
 stops early.
 """
@@ -36,6 +39,7 @@ def main():
     ap.add_argument("--games", type=int, default=1000)
     ap.add_argument("--seed0", type=int, default=0)
     ap.add_argument("--threads", type=int, default=32)
+    ap.add_argument("--players", type=int, default=2)
     ap.add_argument("--model", required=True)
     ap.add_argument("--policy", default=None)
     ap.add_argument("--search", default="sims=400,cpuct=0.3,noise=0.25")
@@ -84,7 +88,7 @@ def main():
             print(f"time limit: stopping at {done} games", flush=True)
             break
         batch = seeds[i : i + chunk]
-        r = native._engine.selfplay(nets, prm, batch, a.threads, a.p_record, a.eps)
+        r = native._engine.selfplay(nets, prm, batch, a.threads, a.p_record, a.eps, a.players)
         r["X"] = r["X"].astype(np.float16)
         dropped += r.pop("unfinished")
         parts.append(r)

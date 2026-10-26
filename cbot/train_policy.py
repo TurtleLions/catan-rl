@@ -11,7 +11,8 @@ search's best move is among the policy's top 1-4 moves, the number that
 matters for pruning.
 
 The output file has the value-net format (cbot.search.ValueNet) with one
-output per move (cbot.policy.SIZE).
+output per move: cbot.policy.SIZE in 1v1, the native engine's numbers
+(cbot.native.index, with steals from each seat apart) with more players.
 """
 
 import argparse
@@ -26,15 +27,27 @@ from cbot import policy
 from cbot.train import build, export
 
 
+def moves(players):
+    """Policy outputs: cbot.policy's numbers in 1v1, the native engine's otherwise."""
+    if players == 2:
+        return policy.SIZE
+    from cbot import native
+
+    return native._engine.NUM_ACTIONS
+
+
 def load(dirs, temp):
     X, T, M, G = [], [], [], []
+    size = None
     for f in sorted(f for d in dirs for f in glob.glob(f"{d}/*.npz") if not f.endswith(".tmp.npz")):
         d = np.load(f)
         if "pr" not in d.files or len(d["pr"]) == 0:
             continue
+        if size is None:
+            size = moves(2 if d["v"].ndim == 1 else d["v"].shape[1])
         pr, pa, pv = d["pr"], d["pa"].astype(np.int64), d["pv"]
         rows, inv = np.unique(pr, return_inverse=True)
-        vals = np.full((len(rows), policy.SIZE), -np.inf, dtype=np.float32)
+        vals = np.full((len(rows), size), -np.inf, dtype=np.float32)
         vals[inv, pa] = pv
         mask = np.isfinite(vals)
         z = (vals - vals.max(1, keepdims=True)) / temp
@@ -42,7 +55,7 @@ def load(dirs, temp):
         t /= t.sum(1, keepdims=True)
         if "pn" in d.files and (d["pn"] >= 0).any():
             pn = d["pn"]
-            visits = np.zeros((len(rows), policy.SIZE), dtype=np.float32)
+            visits = np.zeros((len(rows), size), dtype=np.float32)
             visits[inv, pa] = np.maximum(pn, 0)
             tot = visits.sum(1, keepdims=True)
             searched = np.zeros(len(rows), bool)
@@ -86,7 +99,7 @@ def main():
     norm = lambda x: torch.from_numpy((x.astype(np.float32) - mean) / std)  # noqa: E731
     Xva_t, Tva_t, Mva_t = norm(X[va]), torch.from_numpy(T[va]), torch.from_numpy(M[va])
 
-    model = build(X.shape[1], hidden, args.dropout, out=policy.SIZE)
+    model = build(X.shape[1], hidden, args.dropout, out=T.shape[1])
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps = args.epochs * max(1, len(Xtr) // args.bs)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=steps)

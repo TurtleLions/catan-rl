@@ -1,17 +1,21 @@
-"""The native 1v1 engine (cbot/engine, built into cbot._engine) seen from
-Catanatron: a Catanatron game converted to a native one, native move numbers
-mapped back to Catanatron actions, and native features in cbot.feats order.
+"""The native engine (cbot/engine, built into cbot._engine; 2 to 4 players)
+seen from Catanatron: a Catanatron game converted to a native one, native move
+numbers mapped back to Catanatron actions, and native features in cbot.feats
+order.
 
     from cbot import native
     g = native.from_game(game)            # same position, natively
     g.legal(), g.apply(move), g.encode(seat)
+
+Move numbers are cbot.policy's, except that a steal from the second or third
+seat after the mover has a number of its own (index()).
 
 Build the module with cbot/engine/build.sh.
 """
 
 import numpy as np
 
-from catanatron.models.enums import DEVELOPMENT_CARDS, RESOURCES, SETTLEMENT, CITY, ActionPrompt
+from catanatron.models.enums import DEVELOPMENT_CARDS, RESOURCES, SETTLEMENT, CITY, ActionPrompt, ActionType
 from catanatron.models.board import get_edges
 
 from cbot import _engine, feats, policy
@@ -23,8 +27,10 @@ _DEVS = DEVELOPMENT_CARDS  # KNIGHT, YEAR_OF_PLENTY, MONOPOLY, ROAD_BUILDING, VI
 _OWNED = DEVELOPMENT_CARDS[:4]
 
 
-def canonical_names():
+def canonical_names(players=2):
     """Feature names in the order catan.h's encode_canonical writes them."""
+    if players > 2:
+        return _compact_names(players)
     n = []
     n.append("P0_ACTUAL_VPS")
     for i in range(2):
@@ -51,12 +57,36 @@ def canonical_names():
     return n
 
 
+def _compact_names(players):
+    """catan.h's encode_compact."""
+    r = range(players)
+    n = ["P0_ACTUAL_VPS"]
+    for i in r:
+        n += [f"P{i}_{k}" for k in ("PUBLIC_VPS", "HAS_ARMY", "HAS_ROAD", "ROADS_LEFT", "SETTLEMENTS_LEFT",
+                                    "CITIES_LEFT", "HAS_ROLLED", "LONGEST_ROAD_LENGTH")]
+    n += [f"P0_{x}_IN_HAND" for x in RESOURCES] + [f"P0_{d}_IN_HAND" for d in _DEVS]
+    n.append("P0_HAS_PLAYED_DEVELOPMENT_CARD_IN_TURN")
+    for i in r:
+        n += [f"P{i}_{d}_PLAYED" for d in _DEVS[:4]] + [f"P{i}_NUM_RESOURCES_IN_HAND", f"P{i}_NUM_DEVS_IN_HAND"]
+    n += ["BANK_DEV_CARDS", "IS_MOVING_ROBBER", "IS_DISCARDING"] + [f"BANK_{x}" for x in RESOURCES]
+    n += [f"EFFECTIVE_P{i}_{x}_PRODUCTION" for x in RESOURCES for i in r]
+    n += [f"P{i}_{lv}_ROAD_REACHABLE_{x}" for i in r for lv in range(3) for x in RESOURCES]
+    n += ["X_MY_TURN", "X_I_AM_FIRST", "X_NUM_TURNS"]
+    for i in r:
+        n += [f"X_SEAT{i}", f"X_P{i}_TO_MOVE"]
+    n.append("X_INITIAL_PHASE")
+    n += [f"X_PROMPT_{p.name}" for p in _PROMPTS]
+    n += [f"X_P{i}_BUILDABLE" for i in r]
+    return n
+
+
 def _install_layout():
-    names = canonical_names()
-    order = {k: i for i, k in enumerate(feats.feature_names())}
-    assert sorted(names) == sorted(order), "native features differ from cbot.feats"
-    perm = [order[k] for k in names] + list(range(len(names), DIM))
-    _engine.set_layout(np.array(perm, dtype=np.int32))
+    for players in (2, 3, 4):
+        names = canonical_names(players)
+        order = {k: i for i, k in enumerate(feats.feature_names(players))}
+        assert sorted(names) == sorted(order), "native features differ from cbot.feats"
+        perm = [order[k] for k in names] + list(range(len(names), _engine.dim(players)))
+        _engine.set_layout(players, np.array(perm, dtype=np.int32))
 
 
 _install_layout()
@@ -67,9 +97,8 @@ def _res(r):
 
 
 def to_dict(game):
-    """The native state dict (catan.h State) of a 1v1 Catanatron game."""
+    """The native state dict (catan.h State) of a Catanatron game."""
     st = game.state
-    assert len(st.colors) == 2, "the native engine is 1v1 only"
     assert st.current_prompt not in (ActionPrompt.DECIDE_TRADE, ActionPrompt.DECIDE_ACCEPTEES)
     seat = {c: i for i, c in enumerate(st.colors)}
     board = st.board
@@ -125,18 +154,33 @@ def from_game(game, seed=1):
     return _engine.Game.from_dict(to_dict(game), seed)
 
 
+_TILE_ID = {}
+
+
+def index(game, action):
+    """The native number of a Catanatron action (cbot.policy's, but a steal
+    from the second or third seat after the mover numbered apart), or -1."""
+    if action.action_type == ActionType.MOVE_ROBBER and action.value[1] is not None:
+        st = game.state
+        n = len(st.colors)
+        rel = (st.colors.index(action.value[1]) - st.colors.index(action.color)) % n
+        if rel >= 2:
+            if not _TILE_ID:
+                _TILE_ID.update({c: t.id for c, t in st.board.map.land_tiles.items()})
+            return _engine.NUM_ACTIONS_1V1 + 19 * (rel - 2) + _TILE_ID[action.value[0]]
+    return policy.index(action)
+
+
 def action_of(game, move):
     """The Catanatron action (of game.playable_actions) with native number `move`."""
     for a in game.playable_actions:
-        if policy.index(a) == move:
+        if index(game, a) == move:
             return a
     raise ValueError(f"move {move} is not playable")
 
 
 def outcome_of(record):
     """The native outcome of a Catanatron ActionRecord (dice sum, card, stolen resource)."""
-    from catanatron.models.enums import ActionType
-
     t, r = record.action.action_type, record.result
     if t == ActionType.ROLL:
         return r[0] + r[1]
@@ -169,8 +213,8 @@ def get_nets(model_path, policy_path=None):
 
         v = get_net(model_path)
         members = v.nets if isinstance(v, Ensemble) else [v]
-        if any(m.players != 2 or not hasattr(m, "layers") for m in members):
-            raise ValueError("native search needs 1v1 MLP value nets")
+        if not all(hasattr(m, "layers") for m in members) or len({m.players for m in members}) > 1:
+            raise ValueError("native search needs MLP value nets, all for the same number of players")
         pol = _mlp(get_policy(policy_path)) if policy_path else None
         _NETS[key] = _engine.Nets([_mlp(m) for m in members], pol)
     return _NETS[key]
@@ -183,13 +227,16 @@ def search_params(kw):
     return {k: kw[k] for k in _PARAMS if k in kw}
 
 
+from cbot import belief, trade as trade_mod  # noqa: E402
 from cbot.mcts import MCTSPlayer  # noqa: E402
 
 
 class NativeMCTSPlayer(MCTSPlayer):
     """cbot.mcts.MCTSPlayer's search run by the native engine (spec NMCTS:...).
-    Same parameters and defaults; trade prompts (from human players) are
-    answered by the Python player."""
+    Same parameters and defaults. Trades between players are the Python
+    player's: it answers offers and, with trade=1, makes them. With more than
+    two players and fair=1, the search starts from cbot.belief's guess of the
+    hidden hands (the engine itself only deals development cards again)."""
 
     LABEL = "NativeMCTS"
 
@@ -206,14 +253,20 @@ class NativeMCTSPlayer(MCTSPlayer):
         if game.state.current_prompt in (ActionPrompt.DECIDE_TRADE, ActionPrompt.DECIDE_ACCEPTEES):
             return super().decide(game, playable_actions)
         self.last_value = self.last_scores = self.last_vec = self.last_visits = None
-        if len(playable_actions) == 1:
+        if len(playable_actions) == 1 and not (self.trade and trade_mod.offers(game, self.color)):
             return playable_actions[0]
+        n = len(game.state.colors)
         me = game.state.colors.index(self.color)
-        d = self.native.decide(from_game(game), me)
-        acts = {policy.index(a): a for a in playable_actions}
-        self.last_vec = np.array(d["vec"])
+        seen = belief.determinize(game, self.color, self.rng) if self.fair and n > 2 else game
+        d = self.native.decide(from_game(seen), me)
+        acts = {index(game, a): a for a in playable_actions}
+        self.last_vec = np.array(d["vec"][:n])
         self.last_value = float(self.last_vec[me])
         self.last_scores = [(acts[m], q) for m, q in zip(d["moves"], d["q"])]
-        if any(n >= 0 for n in d["visits"]):
-            self.last_visits = [(acts[m], n) for m, n in zip(d["moves"], d["visits"])]
+        if any(k >= 0 for k in d["visits"]):
+            self.last_visits = [(acts[m], k) for m, k in zip(d["moves"], d["visits"])]
+        if self.trade and d["searched"]:
+            offer = self._offer(seen, self.last_vec)
+            if offer is not None:
+                return offer
         return acts[d["move"]]

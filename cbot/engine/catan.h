@@ -1,4 +1,5 @@
-// Native 1v1 Catan with Catanatron's rules, numbering and features.
+// Native Catan for 2 to 4 players with Catanatron's rules, numbering and
+// features.
 //
 // Mirrors catanatron (vendor/catanatron, ecf9311) move for move, including its
 // quirks: connected road components kept as an ordered list of node sets (a
@@ -8,9 +9,10 @@
 // so on. cbot/check_native.py replays Catanatron games through it and compares
 // legal moves, states and feature vectors at every step.
 //
-// Two seats; seat i is colors[i] in Catanatron. Moves are numbered as in
-// cbot.policy (catanatron.gym's action array, the robber's victim recorded as
-// "the opponent").
+// Seat i is colors[i] in Catanatron. Moves are numbered as in cbot.policy
+// (catanatron.gym's action array, the robber's victim recorded as "the next
+// seat"), plus steals from the second and third seat after the mover
+// (tables.h). Trades between players are not modeled.
 #pragma once
 
 #include <algorithm>
@@ -24,8 +26,12 @@
 
 namespace ce {
 
-constexpr int NODES = 54, EDGES = 72, TILES = 19, PORTS = 9, NP = 2, MAXC = 16;
+constexpr int NODES = 54, EDGES = 72, TILES = 19, PORTS = 9, MAXP = 4, MAXC = 16;
+// Feature vector sizes: 1v1 (cbot.feats.encode's full layout), and with more
+// players the compact features only.
 constexpr int FEATS = 667, PIPS = 54, DIM = FEATS + PIPS + 5;
+constexpr int compact_dim(int n) { return 31 + 37 * n; }
+constexpr int dim(int n) { return n == 2 ? DIM : compact_dim(n); }
 constexpr int TURNS_LIMIT = 1000;  // catanatron.game.TURNS_LIMIT
 
 enum Res { WOOD, BRICK, SHEEP, WHEAT, ORE };
@@ -54,7 +60,7 @@ struct Topo {
   int roll, buy, knight, rb, end;
   int discard[5], mono[5], road[EDGES], settle[NODES], city[NODES];
   int yop[5][6];        // [r1][r2], r2 = 5 for one card
-  int robber[TILES][2];  // [tile][steal]
+  int robber[TILES][4];  // [tile][victim's seat after the mover, 0 = no steal]
   int trade[5][5][5];   // [give][get][rate]
   double dice[13];      // DICE_PROBAS, summed as Catanatron sums them
 
@@ -202,13 +208,14 @@ struct Player {
 
 struct State {
   const Map* map;
-  Player p[NP];
+  int8_t np;                           // players
+  Player p[MAXP];
   int8_t bowner[NODES], btype[NODES];  // building owner (-1 none); 1 settlement, 2 city
   int8_t road[EDGES];                  // owner, -1 none
-  uint64_t comp[NP][MAXC];             // board.connected_components, in order
-  int8_t ncomp[NP];
+  uint64_t comp[MAXP][MAXC];           // board.connected_components, in order
+  int8_t ncomp[MAXP];
   uint64_t buildable;                  // board.board_buildable_ids
-  int8_t rl[NP], rl_order[NP], n_rl;   // board.road_lengths, in insertion order
+  int8_t rl[MAXP], rl_order[MAXP], n_rl;  // board.road_lengths, in insertion order
   int8_t road_color, road_length;      // board.road_color (-1 none), road_length
   int8_t robber;                       // tile id
   int8_t bank[5];
@@ -217,15 +224,17 @@ struct State {
   int8_t cur, turn, prompt;            // current_player_index, current_turn_index
   bool initial, discarding, moving_knight, road_building;
   int8_t free_roads;
-  int8_t discard[NP];                  // discard_counts
+  int8_t discard[MAXP];                // discard_counts
   int8_t vps_to_win, discard_limit;
 
   // A new game on `m` (seat 0 first), deck shuffled with rng.
   template <class R>
-  static State fresh(const Map* m, R& rng, int vps_to_win = 10, int discard_limit = 7) {
+  static State fresh(const Map* m, R& rng, int np = 2, int vps_to_win = 10, int discard_limit = 7) {
+    if (np < 2 || np > MAXP) throw std::runtime_error("2 to 4 players");
     State s;
     std::memset(&s, 0, sizeof(s));
     s.map = m;
+    s.np = int8_t(np);
     for (Player& q : s.p) {
       q.roads_av = 15, q.setts_av = 5, q.cities_av = 4;
     }
@@ -247,10 +256,12 @@ struct State {
 
   int winner() const {
     int w = -1;
-    for (int i = 0; i < NP; i++)
+    for (int i = 0; i < np; i++)
       if (p[i].avp >= vps_to_win) w = i;
     return w;
   }
+  // The seat `k` places after seat c.
+  int after(int c, int k) const { return (c + k) % np; }
   bool over() const { return winner() >= 0 || num_turns >= TURNS_LIMIT; }
 
   // ---- board helpers
@@ -447,14 +458,14 @@ struct State {
     for (int r = 0; r < 5; r++) q.res[r] -= cost[r], bank[r] += cost[r];
   }
   void advance(int dir = 1) {
-    cur = int8_t(((cur + dir) % NP + NP) % NP);
+    cur = int8_t(((cur + dir) % np + np) % np);
     turn = cur;
     num_turns++;
   }
   void play_dev(int c, int d) {
     int prev = -1, prev_size = 0;
     if (d == KNIGHT)
-      for (int i = 0; i < NP; i++)
+      for (int i = 0; i < np; i++)
         if (p[i].has_army) {
           prev = i, prev_size = p[i].played[KNIGHT];
           break;
@@ -500,14 +511,20 @@ struct State {
         return n;
       }
       case P_ROBBER: {
+        // One move per player with cards at the tile (Catanatron's order is
+        // that of a set; ours is by seat after the mover), else a move without
+        // a steal.
         for (int t = 0; t < TILES; t++) {
           if (t == robber) continue;
-          bool steal = false;
+          bool victim[MAXP] = {};
           for (int k = 0; k < 6; k++) {
             int o = bowner[TILE_NODES[t][k]];
-            if (o >= 0 && o != c && p[o].ncards() >= 1) steal = true;
+            if (o >= 0 && o != c && p[o].ncards() >= 1) victim[o] = true;
           }
-          out[n++] = T.robber[t][steal];
+          int before = n;
+          for (int r = 1; r < np; r++)
+            if (victim[after(c, r)]) out[n++] = T.robber[t][r];
+          if (n == before) out[n++] = T.robber[t][0];
         }
         return n;
       }
@@ -622,10 +639,11 @@ struct State {
         if (initial) {
           board_road(c, e);
           q.roads_av--;
-          int nb = p[0].nsetts + p[1].nsetts;
-          if (nb < NP) advance(), prompt = P_INIT_SETTLE;
-          else if (nb == NP) prompt = P_INIT_SETTLE;
-          else if (nb == 2 * NP) initial = false, prompt = P_PLAY;
+          int nb = 0;
+          for (int i = 0; i < np; i++) nb += p[i].nsetts;
+          if (nb < np) advance(), prompt = P_INIT_SETTLE;
+          else if (nb == np) prompt = P_INIT_SETTLE;
+          else if (nb == 2 * np) initial = false, prompt = P_PLAY;
           else advance(-1), prompt = P_INIT_SETTLE;
         } else if (road_building && free_roads > 0) {
           int prev = board_road(c, e);
@@ -675,7 +693,7 @@ struct State {
         int number = outcome >= 0 ? outcome : 2 + rng.below(6) + rng.below(6);
         if (number == 7) {
           int first = -1;
-          for (int i = 0; i < NP; i++) {
+          for (int i = 0; i < np; i++) {
             int nc = p[i].ncards();
             discard[i] = nc > discard_limit ? nc / 2 : 0;
             if (discard[i] > 0 && first < 0) first = i;
@@ -683,11 +701,11 @@ struct State {
           if (first >= 0) {
             cur = first, prompt = P_DISCARD, discarding = true;
           } else {
-            for (int i = 0; i < NP; i++) discard[i] = 0;
+            for (int i = 0; i < np; i++) discard[i] = 0;
             prompt = P_ROBBER, moving_knight = true;
           }
         } else {
-          int pay_[NP][5] = {}, tot[5] = {};
+          int pay_[MAXP][5] = {}, tot[5] = {};
           for (int t = 0; t < TILES; t++) {
             if (map->num[t] != number || t == robber || map->res[t] < 0) continue;
             int r = map->res[t];
@@ -699,7 +717,7 @@ struct State {
           }
           for (int r = 0; r < 5; r++) {
             if (bank[r] < tot[r]) continue;  // depleted: nobody gets it
-            for (int i = 0; i < NP; i++) p[i].res[r] += pay_[i][r], bank[r] -= pay_[i][r];
+            for (int i = 0; i < np; i++) p[i].res[r] += pay_[i][r], bank[r] -= pay_[i][r];
           }
           prompt = P_PLAY;
         }
@@ -711,7 +729,7 @@ struct State {
         discard[c]--;
         if (discard[c] <= 0) {
           int next = -1;
-          for (int i = cur + 1; i < NP; i++)
+          for (int i = cur + 1; i < np; i++)
             if (discard[i] > 0) {
               next = i;
               break;
@@ -719,14 +737,14 @@ struct State {
           if (next >= 0) cur = next;
           else {
             cur = turn, prompt = P_ROBBER, discarding = false, moving_knight = true;
-            for (int i = 0; i < NP; i++) discard[i] = 0;
+            for (int i = 0; i < np; i++) discard[i] = 0;
           }
         }
         break;
       }
       case A_ROBBER: {
         if (A[2]) {
-          int v = 1 - c;
+          int v = after(c, A[2]);
           int r = outcome;
           if (r < 0) {  // random card from the victim's hand
             int k = rng.below(p[v].ncards());
@@ -754,7 +772,7 @@ struct State {
       }
       case A_MONO: {
         int r = A[1];
-        for (int i = 0; i < NP; i++)
+        for (int i = 0; i < np; i++)
           if (i != c) q.res[r] += p[i].res[r], p[i].res[r] = 0;
         play_dev(c, MONO);
         prompt = P_PLAY;
@@ -787,19 +805,21 @@ struct State {
       return 11;
     }
     if (A[0] == A_BUY) {
-      // Unseen cards from the buyer's view: the deck plus the other hand. A
+      // Unseen cards from the buyer's view: the deck plus the other hands. A
       // card not in the deck is drawn from its top instead (as cbot.chance).
       int cnt[5] = {}, tot = 0;
       for (int i = 0; i < ndeck; i++) cnt[deck[i]]++, tot++;
-      const Player& o = p[1 - cur];
-      for (int d = 0; d < 5; d++) cnt[d] += o.dev[d], tot += o.dev[d];
+      for (int k = 1; k < np; k++) {
+        const Player& o = p[after(cur, k)];
+        for (int d = 0; d < 5; d++) cnt[d] += o.dev[d], tot += o.dev[d];
+      }
       int n = 0;
       for (int d = 0; d < 5; d++)
         if (cnt[d]) outs[n] = d, probs[n] = double(cnt[d]) / tot, n++;
       return n;
     }
     if (A[0] == A_ROBBER && A[2]) {
-      const Player& v = p[1 - cur];
+      const Player& v = p[after(cur, A[2])];
       int tot = v.ncards(), n = 0;
       if (tot == 0) {
         outs[0] = -1, probs[0] = 1.0;
@@ -878,13 +898,21 @@ struct State {
     }
   }
 
-  // Features from seat p0's view, in canonical order (DIM floats).
+  // Features from seat p0's view, in canonical order (dim(np) floats).
   void encode_canonical(int p0, float* f) const {
+    if (np == 2) encode_1v1(p0, f);
+    else encode_compact(p0, f);
+  }
+
+  // cbot.feats with more players: the compact features. Players are numbered
+  // from p0 in seat order (features.iter_players).
+  void encode_compact(int p0, float* f) const {
     int k = 0;
-    int seat[NP] = {p0, 1 - p0};
+    int seat[MAXP];
+    for (int i = 0; i < np; i++) seat[i] = after(p0, i);
     auto put = [&](double x) { f[k++] = float(x); };
     put(p[p0].avp);
-    for (int i = 0; i < NP; i++) {
+    for (int i = 0; i < np; i++) {
       const Player& q = p[seat[i]];
       put(q.vp), put(q.has_army), put(q.has_road), put(q.roads_av), put(q.setts_av), put(q.cities_av),
           put(q.has_rolled), put(q.lr_len);
@@ -893,7 +921,45 @@ struct State {
     for (int r = 0; r < 5; r++) put(me.res[r]);
     for (int d = 0; d < 5; d++) put(me.dev[d]);
     put(me.played_dev);
-    for (int i = 0; i < NP; i++) {
+    for (int i = 0; i < np; i++) {
+      const Player& q = p[seat[i]];
+      for (int d = 0; d < 4; d++) put(q.played[d]);
+      put(q.ncards()), put(q.ndevs());
+    }
+    put(ndeck), put(prompt == P_ROBBER), put(prompt == P_DISCARD);
+    for (int r = 0; r < 5; r++) put(bank[r]);
+    double prod[MAXP][5];
+    for (int i = 0; i < np; i++) production(seat[i], true, prod[i]);
+    for (int r = 0; r < 5; r++)
+      for (int i = 0; i < np; i++) put(prod[i][r]);
+    for (int i = 0; i < np; i++) {
+      double reach[3][5];
+      reachability(seat[i], reach);
+      for (int l = 0; l < 3; l++)
+        for (int r = 0; r < 5; r++) put(reach[l][r]);
+    }
+    put(cur == p0), put(p0 == 0), put(num_turns / 100.0);
+    for (int i = 0; i < np; i++) put(p0 == i), put(cur == seat[i]);
+    put(initial);
+    for (int pr = 0; pr < 7; pr++) put(prompt == pr);
+    for (int i = 0; i < np; i++) put(popcount(buildable_nodes(seat[i])) / 10.0);
+  }
+
+  void encode_1v1(int p0, float* f) const {
+    int k = 0;
+    int seat[2] = {p0, 1 - p0};
+    auto put = [&](double x) { f[k++] = float(x); };
+    put(p[p0].avp);
+    for (int i = 0; i < 2; i++) {
+      const Player& q = p[seat[i]];
+      put(q.vp), put(q.has_army), put(q.has_road), put(q.roads_av), put(q.setts_av), put(q.cities_av),
+          put(q.has_rolled), put(q.lr_len);
+    }
+    const Player& me = p[p0];
+    for (int r = 0; r < 5; r++) put(me.res[r]);
+    for (int d = 0; d < 5; d++) put(me.dev[d]);
+    put(me.played_dev);
+    for (int i = 0; i < 2; i++) {
       const Player& q = p[seat[i]];
       for (int d = 0; d < 4; d++) put(q.played[d]);
       put(q.ncards()), put(q.ndevs());
@@ -906,17 +972,17 @@ struct State {
       for (int r = 0; r < 5; r++) put(map->port[pt] == r);
       put(map->port[pt] < 0);
     }
-    for (int i = 0; i < NP; i++) {
+    for (int i = 0; i < 2; i++) {
       for (int n = 0; n < NODES; n++) put(bowner[n] == seat[i] && btype[n] == 1), put(bowner[n] == seat[i] && btype[n] == 2);
       for (int e = 0; e < EDGES; e++) put(road[e] == seat[i]);
     }
     put(ndeck), put(prompt == P_ROBBER), put(prompt == P_DISCARD);
     for (int r = 0; r < 5; r++) put(bank[r]);
-    double prod[NP][5];
-    for (int i = 0; i < NP; i++) production(seat[i], true, prod[i]);
+    double prod[2][5];
+    for (int i = 0; i < 2; i++) production(seat[i], true, prod[i]);
     for (int r = 0; r < 5; r++)
-      for (int i = 0; i < NP; i++) put(prod[i][r]);
-    for (int i = 0; i < NP; i++) {
+      for (int i = 0; i < 2; i++) put(prod[i][r]);
+    for (int i = 0; i < 2; i++) {
       double reach[3][5];
       reachability(seat[i], reach);
       for (int l = 0; l < 3; l++)
@@ -924,16 +990,16 @@ struct State {
     }
     put(cur == p0), put(p0 == 0), put(num_turns / 100.0), put(initial);
     for (int pr = 0; pr < 7; pr++) put(prompt == pr);
-    for (int i = 0; i < NP; i++) put(popcount(buildable_nodes(seat[i])) / 10.0);
+    for (int i = 0; i < 2; i++) put(popcount(buildable_nodes(seat[i])) / 10.0);
     for (int n = 0; n < NODES; n++) f[k++] = map->pips[n];
     for (int r = 0; r < 5; r++) put(p[1 - p0].res[r]);
   }
 
   // players.value.base_fn (DEFAULT_WEIGHTS) for seat c.
   double base_value(int c) const {
-    double prod[NP][5];
+    double prod[2][5];
     production(c, true, prod[0]);
-    production(1 - c, true, prod[1]);
+    production(after(c, 1), true, prod[1]);  // base_fn counts only the next seat as the enemy
     static const int ORDER[5] = {WHEAT, ORE, SHEEP, WOOD, BRICK};
     double production = 0, enemy = 0;
     int variety = 0;

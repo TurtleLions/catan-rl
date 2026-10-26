@@ -2,11 +2,12 @@
 
     python -m cbot.check_native --games 200 --table R,R
     python -m cbot.check_native --games 50 --table AB,F --procs 32
+    python -m cbot.check_native --games 50 --table AB,F,R,F --procs 32
 
-Plays Catanatron games and, at every decision, converts the position to the
-native engine and compares
-  * the legal moves (as cbot.policy numbers),
-  * both seats' feature vectors with cbot.feats.encode,
+Plays Catanatron games (2 to 4 players) and, at every decision, converts the
+position to the native engine and compares
+  * the legal moves (as native numbers, cbot.native.index),
+  * every seat's feature vector with cbot.feats.encode,
   * base_fn (the heuristic behind ValueFunctionPlayer and AlphaBeta),
   * the native position after playing Catanatron's move (with its dice,
     card or steal) with Catanatron's position after it.
@@ -45,15 +46,17 @@ def check_game(args):
     from catanatron import Color, Game
     from catanatron.players.value import base_fn
 
-    from cbot import feats, native, policy
+    from cbot import feats, native
     from cbot.players import make_player
 
-    colors = [Color.RED, Color.BLUE]
+    colors = [Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE][: len(table)]
     game = Game([make_player(sp, c) for sp, c in zip(table, colors)], seed=seed)
     fn = base_fn()
     stats = {"positions": 0, "moves": 0, "legal": 0, "feats": 0, "base": 0, "next": 0, "maxdiff": 0.0}
     errors = []
-    names = list(feats.feature_names()) + [f"PIP{i}" for i in range(54)] + [f"OPP{i}" for i in range(5)]
+    names = list(feats.feature_names(len(table)))
+    if len(table) == 2:
+        names += [f"PIP{i}" for i in range(54)] + [f"OPP{i}" for i in range(5)]
 
     def err(kind, msg):
         stats[kind] += 1
@@ -68,7 +71,7 @@ def check_game(args):
         bad = _diff(d, g.to_dict())
         if bad:
             err("next", "conversion " + "; ".join(bad[:3]))
-        want = sorted(policy.index(a) for a in game.playable_actions)
+        want = sorted(native.index(game, a) for a in game.playable_actions)
         got = sorted(g.legal())
         if want != got:
             err("legal", f"prompt {st.current_prompt} catanatron {want} native {got}")
@@ -84,7 +87,7 @@ def check_game(args):
                 err("base", f"seat {seat}: {b0!r} vs {b1!r}")
         player = st.current_player()
         action = player.decide(game, game.playable_actions)
-        move = policy.index(action)
+        move = native.index(game, action)
         rec = game.execute(action)
         stats["moves"] += 1
         g.apply(move, native.outcome_of(rec))

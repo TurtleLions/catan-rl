@@ -1,5 +1,7 @@
 // Native tree search and self-play: cbot/mcts.py's MCTSPlayer on the native
-// engine, with the value committee and policy net evaluated in C++.
+// engine, with the value committee and policy net evaluated in C++. With more
+// than two players the search is max-n, as in cbot.mcts: values are vectors
+// of win probabilities, one per seat, and each mover maximizes its own.
 #pragma once
 
 #include <atomic>
@@ -12,11 +14,13 @@
 
 namespace ce {
 
-extern int LAYOUT[DIM];
+// LAYOUT[n][k]: where canonical feature k goes in cbot.feats order, n players.
+extern int LAYOUT[MAXP + 1][DIM];
 inline void encode(const State& s, int p0, float* out) {
   float f[DIM];
   s.encode_canonical(p0, f);
-  for (int k = 0; k < DIM; k++) out[LAYOUT[k]] = f[k];
+  const int* L = LAYOUT[int(s.np)];
+  for (int k = 0, d = dim(s.np); k < d; k++) out[L[k]] = f[k];
 }
 
 // --- Nets (cbot.search.ValueNet: normalization folded into the first layer) --
@@ -32,13 +36,13 @@ struct MLP {
 
   int out_dim() const { return layers.back().out; }
 
-  // X: (B, DIM) full vectors -> out: (B, out_dim) logits.
-  void forward(const float* X, int B, float* out) const {
+  // X: (B, stride) full vectors -> out: (B, out_dim) logits.
+  void forward(const float* X, int B, int stride, float* out) const {
     thread_local std::vector<float> h, o;
     int in = int(cols.size());
     h.resize(size_t(B) * in);
     for (int b = 0; b < B; b++)
-      for (int i = 0; i < in; i++) h[size_t(b) * in + i] = X[size_t(b) * DIM + cols[i]];
+      for (int i = 0; i < in; i++) h[size_t(b) * in + i] = X[size_t(b) * stride + cols[i]];
     for (size_t li = 0; li < layers.size(); li++) {
       const Layer& L = layers[li];
       o.resize(size_t(B) * L.out);
@@ -62,56 +66,86 @@ struct MLP {
 };
 
 struct Nets {
-  std::vector<MLP> value;  // committee: mean of sigmoids, P(perspective seat wins)
-  MLP policy;              // logits over the NUM_ACTIONS moves
+  // Committee, mean of win probabilities: 1v1 nets give P(perspective seat
+  // wins) as one logit, multiplayer nets a softmax over the seats in order
+  // from the perspective seat.
+  std::vector<MLP> value;
+  MLP policy;  // logits over the moves (the first out_dim move numbers)
   bool has_policy = false;
 
-  // P(seat p0 wins) for each of B feature rows (encoded for p0).
-  void values(const float* X, int B, double* out) const {
+  // Win probability of each seat from the perspective seat on (n per row)
+  // for B feature rows of n players (encoded for the perspective seat).
+  void values(const float* X, int B, int n, double* out) const {
     thread_local std::vector<float> lg;
-    lg.resize(B);
-    for (int b = 0; b < B; b++) out[b] = 0;
+    int stride = dim(n);
+    for (int i = 0; i < B * n; i++) out[i] = 0;
     for (const MLP& m : value) {
-      m.forward(X, B, lg.data());
+      int k = m.out_dim();
+      if (k != (n == 2 ? 1 : n) && k != n) throw std::runtime_error("value net does not match the players");
+      lg.resize(size_t(B) * k);
+      m.forward(X, B, stride, lg.data());
       for (int b = 0; b < B; b++) {
-        double z = std::min(30.0, std::max(-30.0, double(lg[b])));
-        out[b] += 1.0 / (1.0 + std::exp(-z));
+        double* o = out + size_t(b) * n;
+        const float* z = &lg[size_t(b) * k];
+        if (k == 1) {
+          double p = 1.0 / (1.0 + std::exp(-std::min(30.0, std::max(-30.0, double(z[0])))));
+          o[0] += p, o[1] += 1 - p;
+        } else {
+          double mx = -INFINITY, sum = 0, e[MAXP];
+          for (int j = 0; j < k; j++) mx = std::max(mx, double(z[j]));
+          for (int j = 0; j < k; j++) sum += e[j] = std::exp(z[j] - mx);
+          for (int j = 0; j < k; j++) o[j] += e[j] / sum;
+        }
       }
     }
-    for (int b = 0; b < B; b++) out[b] /= value.size();
+    for (int i = 0; i < B * n; i++) out[i] /= value.size();
   }
 };
 
-// --- Hidden information (cbot.belief.determinize, 1v1) -------------------------
+// --- Hidden information (cbot.belief.determinize, development cards) ---------
 
-// The other seat's development cards dealt again from what `me` has not seen
-// (the deck and that hand), never enough victory points to have won; the deck
-// is the rest, in a random order. Resource hands are fully known in 1v1.
+// The other seats' development cards dealt again from what `me` has not seen
+// (the deck and their hands), each keeping its number of cards and none
+// getting enough victory points to have won; the deck is the rest, in a
+// random order. Resource hands are left as they are: fully known in 1v1;
+// with more players a steal between two others hides its card, which
+// cbot.belief guesses before a position reaches the engine (self-play
+// searches the real hands).
 inline void determinize(State& s, int me, Rng& rng) {
-  Player& o = s.p[1 - me];
-  int8_t pool[50];
-  int n = 0;
+  int8_t pool[25];
+  int n = 0, opp[MAXP], size[MAXP], room[MAXP], no = 0;
   for (int i = 0; i < s.ndeck; i++) pool[n++] = s.deck[i];
-  for (int d = 0; d < 5; d++)
-    for (int k = 0; k < o.dev[d]; k++) pool[n++] = int8_t(d);
-  int size = o.ndevs(), room = s.vps_to_win - 1 - o.vp;
+  for (int k = 1; k < s.np; k++) {
+    int c = (me + k) % s.np;
+    Player& o = s.p[c];
+    opp[no] = c, size[no] = o.ndevs(), room[no] = s.vps_to_win - 1 - o.vp, no++;
+    for (int d = 0; d < 5; d++)
+      for (int j = 0; j < o.dev[d]; j++) pool[n++] = int8_t(d);
+  }
   bool ok = false;
   for (int t = 0; t < 1000 && !ok; t++) {
     rng.shuffle(pool, n);
-    int vps = 0;
-    for (int i = 0; i < size; i++) vps += pool[i] == VPC;
-    ok = vps <= room;
+    ok = true;
+    for (int i = 0, j = 0; j < no; i += size[j], j++) {
+      int vps = 0;
+      for (int x = i; x < i + size[j]; x++) vps += pool[x] == VPC;
+      ok = ok && vps <= room[j];
+    }
   }
   if (!ok) {
     rng.shuffle(pool, n);
     std::stable_sort(pool, pool + n, [](int8_t a, int8_t b) { return (a == VPC) < (b == VPC); });
   }
-  for (int d = 0; d < 5; d++) o.dev[d] = 0;
-  for (int i = 0; i < size; i++) o.dev[pool[i]]++;
-  for (int d = 0; d < 4; d++) o.owned_start[d] = o.dev[d] > 0;
-  o.avp = int8_t(o.vp + o.dev[VPC]);
-  s.ndeck = int8_t(n - size);
-  for (int i = 0; i < s.ndeck; i++) s.deck[i] = pool[size + i];
+  int i = 0;
+  for (int j = 0; j < no; j++) {
+    Player& o = s.p[opp[j]];
+    for (int d = 0; d < 5; d++) o.dev[d] = 0;
+    for (int x = 0; x < size[j]; x++) o.dev[pool[i++]]++;
+    for (int d = 0; d < 4; d++) o.owned_start[d] = o.dev[d] > 0;
+    o.avp = int8_t(o.vp + o.dev[VPC]);
+  }
+  s.ndeck = int8_t(n - i);
+  for (int x = 0; x < s.ndeck; x++) s.deck[x] = pool[i + x];
 }
 
 // --- Tree search (cbot.mcts.MCTSPlayer) ----------------------------------------
@@ -139,9 +173,9 @@ struct Node {
   State s;
   int mover, level, status = NEW;
   bool has_value = false;
-  double value[NP];
+  double value[MAXP];
   std::vector<int> acts;
-  std::vector<double> P, N, W;  // W: (moves, NP)
+  std::vector<double> P, N, W;  // W: (moves, MAXP)
   std::vector<std::vector<Outcome>> kids;
 };
 
@@ -152,7 +186,7 @@ struct Decision {
   bool searched = false;
   std::vector<int> moves, visits;
   std::vector<double> q;
-  double vec[NP] = {0, 0};
+  double vec[MAXP] = {0, 0, 0, 0};
 };
 
 struct Searcher {
@@ -180,14 +214,17 @@ struct Searcher {
   }
 
   // Value vectors (seat order) of states, from `me`'s nets.
-  void eval(const std::vector<const State*>& ss, int me, std::vector<std::array<double, NP>>& out) {
+  void eval(const std::vector<const State*>& ss, int me, std::vector<std::array<double, MAXP>>& out) {
     int B = int(ss.size());
-    X.resize(size_t(B) * DIM);
-    for (int b = 0; b < B; b++) encode(*ss[b], me, &X[size_t(b) * DIM]);
-    std::vector<double> v(B);
-    nets->values(X.data(), B, v.data());
-    out.resize(B);
-    for (int b = 0; b < B; b++) out[b][me] = v[b], out[b][1 - me] = 1 - v[b];
+    if (!B) return;
+    int n = ss[0]->np, D = dim(n);
+    X.resize(size_t(B) * D);
+    for (int b = 0; b < B; b++) encode(*ss[b], me, &X[size_t(b) * D]);
+    std::vector<double> v(size_t(B) * n);
+    nets->values(X.data(), B, n, v.data());
+    out.assign(B, {0, 0, 0, 0});
+    for (int b = 0; b < B; b++)
+      for (int j = 0; j < n; j++) out[b][(me + j) % n] = v[size_t(b) * n + j];
   }
 
   // NNSearchPlayer._complete_opening: finish the opening greedily by base_fn
@@ -214,7 +251,7 @@ struct Searcher {
     }
     std::vector<const State*> ps;
     for (auto& g : finals) ps.push_back(&g);
-    std::vector<std::array<double, NP>> vals;
+    std::vector<std::array<double, MAXP>> vals;
     eval(ps, me, vals);
     int bi = 0;
     for (int i = 1; i < na; i++)
@@ -223,7 +260,7 @@ struct Searcher {
     d.moves.assign(acts, acts + na);
     d.visits.assign(na, -1);
     for (int i = 0; i < na; i++) d.q.push_back(vals[i][me]);
-    d.vec[0] = vals[bi][0], d.vec[1] = vals[bi][1];
+    for (int j = 0; j < MAXP; j++) d.vec[j] = vals[bi][j];
     return d;
   }
 
@@ -241,7 +278,7 @@ struct Searcher {
     n.status = OPEN;
     n.acts.assign(acts, acts + na);
     n.N.assign(na, 0);
-    n.W.assign(size_t(na) * NP, 0);
+    n.W.assign(size_t(na) * MAXP, 0);
     n.kids.assign(na, {});
   }
 
@@ -254,7 +291,7 @@ struct Searcher {
       Node& n = tree[i];
       int w = n.s.winner();
       if (w >= 0) {
-        for (int k = 0; k < NP; k++) n.value[k] = k == w;
+        for (int k = 0; k < MAXP; k++) n.value[k] = k == w;
         n.has_value = true;
         n.status = OVER;
         continue;
@@ -263,11 +300,11 @@ struct Searcher {
       if (!n.has_value) todo.push_back(&n.s), todo_i.push_back(i);
     }
     if (!todo.empty()) {
-      std::vector<std::array<double, NP>> vals;
+      std::vector<std::array<double, MAXP>> vals;
       eval(todo, me, vals);
       for (size_t k = 0; k < todo_i.size(); k++) {
         Node& n = tree[todo_i[k]];
-        n.value[0] = vals[k][0], n.value[1] = vals[k][1];
+        for (int j = 0; j < MAXP; j++) n.value[j] = vals[k][j];
         n.has_value = true;
       }
     }
@@ -281,11 +318,13 @@ struct Searcher {
       acts[b].assign(a, a + na);
     }
     std::vector<float> logits;
+    int K = nets->has_policy ? nets->policy.out_dim() : 0;
     if (nets->has_policy) {
-      X.resize(size_t(B) * DIM);
-      for (int b = 0; b < B; b++) encode(tree[live[b]].s, tree[live[b]].mover, &X[size_t(b) * DIM]);
-      logits.resize(size_t(B) * NUM_ACTIONS);
-      nets->policy.forward(X.data(), B, logits.data());
+      int D = dim(tree[live[0]].s.np);
+      X.resize(size_t(B) * D);
+      for (int b = 0; b < B; b++) encode(tree[live[b]].s, tree[live[b]].mover, &X[size_t(b) * D]);
+      logits.resize(size_t(B) * K);
+      nets->policy.forward(X.data(), B, D, logits.data());
     }
     for (int b = 0; b < B; b++) {
       int i = live[b];
@@ -294,11 +333,23 @@ struct Searcher {
       int na = int(n.acts.size());
       n.P.assign(na, 1.0 / na);
       if (nets->has_policy) {
-        const float* lg = &logits[size_t(b) * NUM_ACTIONS];
+        // Moves past the policy's numbers (a 1v1 policy's, at a bigger
+        // table) keep a uniform share, as moves without a number in cbot.mcts.
+        const float* lg = &logits[size_t(b) * K];
         double mx = -INFINITY, sum = 0;
-        for (int k = 0; k < na; k++) mx = std::max(mx, lg[n.acts[k]] / prm.ptemp);
-        for (int k = 0; k < na; k++) sum += n.P[k] = std::exp(lg[n.acts[k]] / prm.ptemp - mx);
-        for (int k = 0; k < na; k++) n.P[k] /= sum;
+        int known = 0;
+        for (int k = 0; k < na; k++)
+          if (n.acts[k] < K) mx = std::max(mx, lg[n.acts[k]] / prm.ptemp), known++;
+        if (known) {
+          for (int k = 0; k < na; k++)
+            if (n.acts[k] < K) sum += n.P[k] = std::exp(lg[n.acts[k]] / prm.ptemp - mx);
+          double share = double(known) / na, tot = 0;
+          for (int k = 0; k < na; k++) {
+            if (n.acts[k] < K) n.P[k] = n.P[k] / sum * share;
+            tot += n.P[k];
+          }
+          for (int k = 0; k < na; k++) n.P[k] /= tot;
+        }
       }
       if (prm.pmix)
         for (int k = 0; k < na; k++) n.P[k] = (1 - prm.pmix) * n.P[k] + prm.pmix / na;
@@ -314,7 +365,7 @@ struct Searcher {
     double sq = std::sqrt(tot + 1), best = -INFINITY;
     int bi = 0;
     for (int k = 0; k < na; k++) {
-      double q = n.N[k] > 0 ? n.W[size_t(k) * NP + m] / n.N[k] : n.value[m] - prm.fpu;
+      double q = n.N[k] > 0 ? n.W[size_t(k) * MAXP + m] / n.N[k] : n.value[m] - prm.fpu;
       double u = prm.cpuct * n.P[k] * sq / (1 + n.N[k]);
       if (q + u > best) best = q + u, bi = k;
     }
@@ -352,6 +403,14 @@ struct Searcher {
     return o->node;
   }
 
+  // A lost simulation from the mover's view (cbot.mcts._loss): a share of a
+  // win for every other seat.
+  void add_loss(Node& n, int k, double sign) {
+    int np = n.s.np;
+    for (int j = 0; j < np; j++)
+      if (j != n.mover) n.W[size_t(k) * MAXP + j] += sign / (np - 1);
+  }
+
   // Walks down by PUCT with a virtual loss; returns the leaf, path in `path`.
   int descend(int i, std::vector<std::pair<int, int>>& path) {
     path.clear();
@@ -372,7 +431,7 @@ struct Searcher {
       path.push_back({i, k});
       Node& m = tree[i];
       m.N[k] += 1;
-      m.W[size_t(k) * NP + (1 - m.mover)] += 1;  // virtual loss: a win for the other seat
+      add_loss(m, k, 1);
       i = child(i, k);
     }
   }
@@ -410,16 +469,16 @@ struct Searcher {
         const double* v = tree[leaves[b]].value;
         for (auto& [ni, k] : paths[b]) {
           Node& n = tree[ni];
-          for (int j = 0; j < NP; j++) n.W[size_t(k) * NP + j] += v[j];
-          n.W[size_t(k) * NP + (1 - n.mover)] -= 1;
+          for (int j = 0; j < MAXP; j++) n.W[size_t(k) * MAXP + j] += v[j];
+          add_loss(n, k, -1);
         }
       }
     }
     Node& R = tree[root];
     int m = R.mover;
-    std::vector<std::array<double, NP>> Q(na);
+    std::vector<std::array<double, MAXP>> Q(na);
     for (int k = 0; k < na; k++)
-      for (int j = 0; j < NP; j++) Q[k][j] = R.N[k] > 0 ? R.W[size_t(k) * NP + j] / R.N[k] : R.value[j] - 1.0;
+      for (int j = 0; j < MAXP; j++) Q[k][j] = R.N[k] > 0 ? R.W[size_t(k) * MAXP + j] / R.N[k] : R.value[j] - 1.0;
     int first = 0;
     if (prm.pick) {
       double tot = 0;
@@ -440,40 +499,42 @@ struct Searcher {
     d.move = R.acts[first];
     d.moves = R.acts;
     for (int k = 0; k < na; k++) d.visits.push_back(int(R.N[k])), d.q.push_back(Q[k][me]);
-    d.vec[0] = Q[first][0], d.vec[1] = Q[first][1];
+    for (int j = 0; j < MAXP; j++) d.vec[j] = Q[first][j];
     return d;
   }
 };
 
-// --- Self-play (cbot.gen with both seats played by the same searcher) --------
+// --- Self-play (cbot.gen with every seat played by the same searcher) -------
 
 struct GameRecord {
   uint64_t seed;
-  int winner;
-  std::vector<float> X;  // rows of DIM, both seats per recorded position
+  int np, winner;
+  std::vector<float> X;  // rows of dim(np), every seat per recorded position
   std::vector<int> who;
-  std::vector<float> v;  // search value for the row's seat (NaN if not searched)
+  std::vector<float> v;  // per row, np search values from the row's seat on (NaN if not searched)
   std::vector<int> pr, pa, pn;
   std::vector<float> pv;
 };
 
-inline GameRecord play_game(const Nets* nets, const Params& prm, uint64_t seed, double p_record, double eps) {
+inline GameRecord play_game(const Nets* nets, const Params& prm, uint64_t seed, int np, double p_record, double eps) {
   Rng rng(seed);
   Map map = Map::random(rng);
-  State s = State::fresh(&map, rng);
-  Searcher players[NP] = {Searcher(nets, prm, rng.next()), Searcher(nets, prm, rng.next())};
+  State s = State::fresh(&map, rng, np);
+  std::vector<Searcher> players;
+  for (int c = 0; c < np; c++) players.emplace_back(nets, prm, rng.next());
   GameRecord g;
-  g.seed = seed;
+  g.seed = seed, g.np = np;
+  const int D = dim(np);
   int acts[NUM_ACTIONS];
   while (!s.over()) {
     bool rec = rng.uniform() < p_record;
     size_t row0 = g.who.size();
     if (rec)
-      for (int c = 0; c < NP; c++) {
-        g.X.resize(g.X.size() + DIM);
-        encode(s, c, &g.X[g.X.size() - DIM]);
+      for (int c = 0; c < np; c++) {
+        g.X.resize(g.X.size() + D);
+        encode(s, c, &g.X[g.X.size() - D]);
         g.who.push_back(c);
-        g.v.push_back(NAN);
+        g.v.resize(g.v.size() + np, NAN);
       }
     int na = s.legal(acts), move;
     if (na > 1 && rng.uniform() < eps) {
@@ -489,7 +550,8 @@ inline GameRecord play_game(const Nets* nets, const Params& prm, uint64_t seed, 
           g.pv.push_back(float(d.q[k]));
           g.pn.push_back(d.visits[k]);
         }
-        for (int c = 0; c < NP; c++) g.v[row0 + c] = float(d.vec[c]);
+        for (int c = 0; c < np; c++)
+          for (int j = 0; j < np; j++) g.v[(row0 + c) * np + j] = float(d.vec[(c + j) % np]);
       }
     }
     s.apply(move, -1, rng);
