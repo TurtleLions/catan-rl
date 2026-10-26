@@ -18,6 +18,8 @@ models/*
 !models/P1.npz
 !models/Q1_s*.npz
 !models/P4a.npz
+!models/T1_s*.npz
+!models/P3a.npz
 .venv-pypy/
 tools/
 jobs/

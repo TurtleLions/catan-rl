@@ -41,8 +41,9 @@ class Cbot(Player):
     """Native tree search with learned value nets and a policy, hidden cards
     guessed. Against three players: the Q1 committee and policy P4a (76.6% vs
     three AlphaBetas; the A20big expectimax it replaces 70.2%). One on one: the
-    N1 committee and policy P1 (90.1% vs AlphaBeta). Against two players there
-    is no trained bot yet: Catanatron's AlphaBeta plays, declining trades."""
+    N1 committee and policy P1 (90.1% vs AlphaBeta). Against two players: the
+    T1 committee and policy P3a (78.6% vs two AlphaBetas). A spec of plain AB
+    gives Catanatron's AlphaBeta, which declines trades."""
 
     LABEL = "CBOT"
 
