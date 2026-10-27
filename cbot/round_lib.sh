@@ -20,12 +20,12 @@ deadline() {
 }
 END=$(deadline)
 # arena log seed0 specs...: 1000 games, skipped if done or if it would end past
-# the deadline ($ARENA_S seconds per arena, default 300).
+# the deadline ($ARENA_S seconds per arena, default 300) unless LATE=1.
 arena() {
   local out=$1 seed=$2
   shift 2
   if ! grep -q " = " "$out" 2>/dev/null; then
-    [ $(( $(date +%s) + ${ARENA_S:-300} )) -le "$END" ] || { log "$(basename "$out" .log): skipped, past the deadline"; return; }
+    [ "${LATE:-0}" = 1 ] || [ $(( $(date +%s) + ${ARENA_S:-300} )) -le "$END" ] || { log "$(basename "$out" .log): skipped, past the deadline"; return; }
     OMP_NUM_THREADS=1 .venv/bin/python -m cbot.arena "$@" --games 1000 --procs 31 --seed0 "$seed" \
       --log runs/evalset.jsonl > "$out" 2>&1
   fi

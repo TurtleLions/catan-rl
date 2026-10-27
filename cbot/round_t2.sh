@@ -37,7 +37,10 @@ r=$(awk '/games\/h/{x=$4} END{print x / 3600 * 0.85}' runs/gen_t1.log)  # games/
 R=$(( END - $(date +%s) - 1200 ))
 g=$(awk -v R=$R -v T=$(( 2 * Tt )) -v A="$Ta" -v r="$r" -v n="$n1" 'BEGIN{print int((R - T - 5 * A) / (1 + T * r / n))}')
 log "time left ${R}s; t1 training ${Tt}s on $n1 games, arena ${Ta}s; self-play ${g}s at ${r} games/s"
-[ "$g" -ge 1800 ] || { log "under 30 min of self-play would fit, stopping"; exit 1; }
+if [ "$g" -lt 1800 ]; then  # LATE=1: 30 min anyway, finishing past the deadline
+  [ "${LATE:-0}" = 1 ] || { log "under 30 min of self-play would fit, stopping"; exit 1; }
+  g=1800
+fi
 
 log "generating t2"
 nice -n 5 .venv/bin/python -m cbot.ngen --out data/t2 --games 600000 --seed0 720000000 --threads 32 --players 3 \
