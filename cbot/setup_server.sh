@@ -3,7 +3,7 @@
 #   cbot/setup_server.sh [python]      # python defaults to python3; needs 3.12+
 #
 # Creates .venv with Catanatron (vendor/, pinned to the commit all results used),
-# numpy and CPU-only torch, then runs smoke tests: the cbot.fast equivalence
+# numpy, pybind11 and CPU-only torch, builds the native engine, then runs smoke tests: the cbot.fast equivalence
 # check (games must match stock Catanatron move for move) and a short 4-player
 # arena that reports per-core speed.
 set -e
@@ -26,8 +26,11 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/python -m pip install -q --upgrade pip
 .venv/bin/python -m pip install -q -e vendor/catanatron
-.venv/bin/python -m pip install -q numpy
+.venv/bin/python -m pip install -q numpy pybind11
 .venv/bin/python -m pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+
+echo "== native engine"
+cbot/engine/build.sh
 
 echo "== versions"
 .venv/bin/python -c 'import sys, numpy, torch; print(sys.version.split()[0], "numpy", numpy.__version__, "torch", torch.__version__)'

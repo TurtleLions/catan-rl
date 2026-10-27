@@ -14,7 +14,7 @@ from catanatron.models.board import STATIC_GRAPH, get_edges
 from catanatron.models.enums import RESOURCES, ActionType, NodeRef
 from catanatron.models.map import BASE_MAP_TEMPLATE, CatanMap, PORT_DIRECTION_TO_NODEREFS
 from catanatron.models.spiral import spiral_land_coordinates
-from catanatron.models.tiles import LandTile, Port
+from catanatron.models.tiles import Port
 
 from cbot import policy
 

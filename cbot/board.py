@@ -76,7 +76,6 @@ def node_inputs(X, xp=np):
         c, cat, ein = (lambda a: a), np.concatenate, np.einsum
     else:
         c, cat, ein = (lambda a: xp.as_tensor(a).to(X.device)), xp.cat, xp.einsum
-    n = len(X)
     bld = X[:, c(t["bld"])]  # mine S, C, theirs S, C
     port = ein("np,bpt->bnt", c(t["node_port"]).to(X.dtype) if xp is not np else t["node_port"], X[:, c(t["port"])])
     prod = X[:, c(t["tile_res"])] * X[:, c(t["tile_p"])][:, :, None] * 10.0  # (n, tiles, 5)

@@ -12,7 +12,6 @@ from collections import defaultdict
 from catanatron.models.enums import (
     DEVELOPMENT_CARDS,
     RESOURCES,
-    Action,
     ActionRecord,
     ActionType,
 )

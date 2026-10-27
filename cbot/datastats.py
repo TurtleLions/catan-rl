@@ -83,7 +83,10 @@ def main():
             continue
         z = (X.mean(0) - ref[0]) / ref[1]
         top = np.argsort(-np.abs(z))[: args.top]
-        label = lambda i: names[i] if names is not None and i < len(names) else f"x{i}"
+
+        def label(i):
+            return names[i] if names is not None and i < len(names) else f"x{i}"
+
         print("   most shifted vs first: " + ", ".join(f"{label(i)} {z[i]:+.2f}" for i in top))
 
 

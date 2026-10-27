@@ -1,6 +1,6 @@
 """Catanatron's web server with our bot as a seat ("CBOT").
 
-Setup, once (Catanatron checked out in vendor/catanatron as in RESULTS.md):
+Setup, once (Catanatron checked out in vendor/catanatron as in README.md):
 
     .venv/bin/pip install flask flask_cors flask_sqlalchemy sqlalchemy
     git -C vendor/catanatron apply ../../cbot/catanatron_web.patch

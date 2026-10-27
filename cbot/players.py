@@ -8,7 +8,7 @@ Specs:
     R / W             Random / WeightedRandom
     NN:path[:k=v,...] cbot.search.NNSearchPlayer with weights at path
     MCTS:path[:k=v,...] cbot.mcts.MCTSPlayer (PUCT search) with weights at path
-    NMCTS:path[:k=v,...] the same search run by the native engine (cbot.native, 1v1)
+    NMCTS:path[:k=v,...] the same search run by the native engine (cbot.native, 2-4 players)
 """
 
 from catanatron.players.minimax import AlphaBetaPlayer

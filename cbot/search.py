@@ -349,7 +349,6 @@ class NNSearchPlayer(Player):
         if X is None:
             X = np.stack([feats.encode(g, self.color) for g in games])
         vals = self.net(X)
-        n = len(games[0].state.colors)
         me = self._me(games[0])
         if vals.ndim == 1:
             if self.sym:

@@ -34,7 +34,8 @@ if __name__ == "__main__":
     jobs = [(a, b, 40_000_000 + i, f) for i in range(n // 2) for f in (True, False)]
     with mp.Pool(int(sys.argv[4]) if len(sys.argv) > 4 else 16) as p:
         res = p.map(one, jobs, chunksize=2)
-    d = np.array([r[0] for r in res]); w = np.array([r[1] for r in res])
+    d = np.array([r[0] for r in res])
+    w = np.array([r[1] for r in res])
     print(f"overall {w.mean():.3f}  mean prod adv {d.mean():+.4f}  P(adv>0) {(d > 0).mean():.3f}")
     for lo, hi in [(-1, -0.05), (-0.05, -0.02), (-0.02, 0.02), (0.02, 0.05), (0.05, 1)]:
         m = (d > lo) & (d <= hi)

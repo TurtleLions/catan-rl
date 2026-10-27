@@ -3,13 +3,25 @@ vendor/
 data/
 __pycache__/
 *.pyc
-# Keep only released numpy weights: the 1v1 final ensemble (V2*, FINAL.txt), 4-player round 0 (M0*)
-# the 4-player bot the web server plays (A20big*) and its 1v1 bot (N1 + policy P1, BOT1V1.txt).
+# Released weights only: the bots in models/BOT1V1.txt, BOT3P.txt and BOT4P.txt
+# (N1 + P1, T1 + P3a, Q1 + P4a) and the earlier expectimax bots (V2*, M0*, A20big*).
 models/*
 !models/V2a_s*.npz
 !models/V2b_s*.npz
 !models/V2c_s*.npz
-!models/*.txt
+!models/A20big.txt
+!models/BOT1V1.txt
+!models/BOT3P.txt
+!models/BOT4P.txt
+!models/FINAL.txt
+!models/M0.txt
+!models/M0e.txt
+!models/N1.txt
+!models/Q1.txt
+!models/T1.txt
+!models/V2a.txt
+!models/V2b.txt
+!models/V2c.txt
 !models/M0_s*.npz
 !models/M0e_s*.npz
 !models/A20biga_s*.npz
@@ -23,8 +35,11 @@ models/*
 .venv-pypy/
 tools/
 jobs/
-runs/web.sqlite
-runs/web_server.log
 
 # Native engine build (cbot/engine/build.sh)
 cbot/_engine*.so
+
+# Logs, evaluations and local archives
+/runs/
+/old/
+/results.jsonl

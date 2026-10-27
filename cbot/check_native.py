@@ -16,7 +16,6 @@ Prints the first few mismatches and a summary.
 
 import argparse
 import multiprocessing as mp
-import random
 
 import numpy as np
 

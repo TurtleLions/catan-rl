@@ -267,7 +267,7 @@ def _reachability_uncached(game, p0_color, levels):
             features[f"P{i}_0_ROAD_REACHABLE_{resource}"] = production[resource]
 
         enemy_nodes, enemy_roads = _enemy_sets(owners, color)
-        for level, level_nodes, paths in F.iter_level_nodes(
+        for level, level_nodes, _paths in F.iter_level_nodes(
             enemy_nodes, enemy_roads, levels, frozenset(zero_nodes)
         ):
             production = F.count_production(

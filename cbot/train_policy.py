@@ -21,7 +21,6 @@ import time
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from cbot import policy
 from cbot.train import build, export
