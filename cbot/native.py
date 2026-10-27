@@ -234,7 +234,8 @@ from cbot.mcts import MCTSPlayer  # noqa: E402
 class NativeMCTSPlayer(MCTSPlayer):
     """cbot.mcts.MCTSPlayer's search run by the native engine (spec NMCTS:...).
     Same parameters and defaults. Trades between players are the Python
-    player's: it answers offers and, with trade=1, makes them. With more than
+    player's (it answers offers and, with trade=1, makes them), each position
+    after or without a trade valued by the native search. With more than
     two players and fair=1, the search starts from cbot.belief's guess of the
     hidden hands (the engine itself only deals development cards again)."""
 
@@ -270,3 +271,16 @@ class NativeMCTSPlayer(MCTSPlayer):
             if offer is not None:
                 return offer
         return acts[d["move"]]
+
+    def _search(self, games):
+        """Win-probability vector of each position (the positions after and
+        without a trade), by the same native search from it as a root, so
+        trades compare with `last_vec`; the net alone where only one move
+        is legal."""
+        me = self._me(games[0])
+        n = len(games[0].state.colors)
+        out = []
+        for g in games:
+            d = self.native.decide(from_game(g), me)
+            out.append(np.array(d["vec"][:n]) if d["searched"] else self._eval([g])[0])
+        return out

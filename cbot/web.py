@@ -42,8 +42,10 @@ class Cbot(Player):
     guessed. Against three players: the Q1 committee and policy P4a (76.6% vs
     three AlphaBetas; the A20big expectimax it replaces 70.2%). One on one: the
     N1 committee and policy P1 (90.1% vs AlphaBeta). Against two players: the
-    T1 committee and policy P3a (78.6% vs two AlphaBetas). A spec of plain AB
-    gives Catanatron's AlphaBeta, which declines trades."""
+    T1 committee and policy P3a (78.6% vs two AlphaBetas). With 3 or 4 players
+    it also offers trades (vs copies that only answer: 31.6% at 4 players,
+    36.4% at 3). A spec of plain AB gives Catanatron's AlphaBeta, which
+    declines trades."""
 
     LABEL = "CBOT"
 
@@ -68,6 +70,8 @@ class Cbot(Player):
         spec = spec.replace("models/", os.path.join(ROOT, "models") + "/")
         if spec.startswith("NN:"):
             spec += f":depth={self.params.depth}:trade={self.params.trade}"
+        elif spec.startswith("NMCTS:") and players > 2:  # offers untested one on one
+            spec += f":trade={self.params.trade}"
         try:
             return make_player(spec, self.color)
         except ImportError:  # native engine not built (cbot/engine/build.sh): same search in Python
@@ -76,6 +80,9 @@ class Cbot(Player):
     def decide(self, game, playable_actions):
         if self.bot is None:
             self.bot = self._make(len(game.state.colors))
+            others = [p for p in game.state.players if p.color != self.color]
+            if not all(isinstance(p, Cbot) or not p.is_bot for p in others):
+                self.bot.trade = 0  # offer only where every seat can answer (Catanatron's bots raise)
         if isinstance(self.bot, AlphaBetaPlayer) and game.state.current_prompt in (
             ActionPrompt.DECIDE_TRADE, ActionPrompt.DECIDE_ACCEPTEES):  # AlphaBeta cannot weigh trades
             return next(a for a in playable_actions if a.action_type in (ActionType.REJECT_TRADE, ActionType.CANCEL_TRADE))
